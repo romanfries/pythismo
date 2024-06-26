@@ -29,3 +29,9 @@ class TorchMesh(Mesh):
     def from_mesh(cls, mesh):
         return cls(mesh)
 
+    def new_mesh_from_perturbation(self, perturbed_points):
+        copied_mesh = self.copy()
+        copied_mesh.tensor_points = perturbed_points
+        copied_mesh.points = perturbed_points.numpy()
+        return copied_mesh
+
