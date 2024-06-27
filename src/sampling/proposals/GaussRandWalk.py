@@ -3,7 +3,7 @@ from src.mesh.TMesh import TorchMesh
 
 
 class GaussianRandomWalkProposal:
-    def __init__(self, mesh, proposals=10, scale=0.1, sigma=1.0):
+    def __init__(self, mesh, proposals=10, scale=1.0, sigma=10.0):
         self.mesh = mesh
         self.starting_points = mesh.tensor_points
         self.num_points = mesh.tensor_points.shape[0]
