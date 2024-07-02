@@ -1,5 +1,4 @@
 import torch
-from src.mesh.TMesh import TorchMesh
 
 
 class GaussianRandomWalkProposal:
@@ -38,4 +37,4 @@ class GaussianRandomWalkProposal:
         return
 
     def get_mesh_k(self, step):
-        return self.mesh.new_mesh_from_perturbation(self.sequence[:, :, step])
+        return self.mesh.new_mesh_from_transformation(self.sequence[:, :, step])

@@ -5,19 +5,20 @@ import trimesh.registration
 def prepare_landmark_json(reference, landmarks_set):
     reference_list = []
     for reference_landmark in reference:
-        reference_identifier = reference_landmark.get('id')
         reference_coordinates = reference_landmark.get('coordinates')
         reference_list.append(reference_coordinates)
 
     coordinates_list = []
-    for landmarks in landmarks_set:
+    identifier_list = []
+    for landmark_tuple in landmarks_set:
+        landmarks, identifier = landmark_tuple
         coordinate_list = []
         for landmark in landmarks:
-            landmark_identifier = landmark.get('id')
             landmark_coordinates = landmark.get('coordinates')
             coordinate_list.append(landmark_coordinates)
         coordinates_list.append(coordinate_list)
-    return reference_list, coordinates_list
+        identifier_list.append(identifier)
+    return reference_list, coordinates_list, identifier_list
 
 
 def calculate_mean_shape(landmarks_set):
@@ -38,12 +39,14 @@ def align_to_reference(reference, landmarks_set):
 
 
 class ProcrustesAnalyser:
-    def __init__(self, reference, landmarks_set, iterations=5, data_format='landmark_json'):
-        if data_format == 'landmark_json':
-            self.reference, self.landmarks_set = prepare_landmark_json(reference, landmarks_set)
+    def __init__(self, reference, landmarks_set, iterations=5, data_format='landmark_list'):
+        if data_format == 'landmark_list':
+            # landmarks_set is a list of tuples with the respective coordinates of the landmarks and the identifier that
+            # clarifies to which mesh these landmarks belong.
+            self.reference, self.landmarks_set, self.identifiers = prepare_landmark_json(reference, landmarks_set)
         else:
-            self.reference = reference
-            self.landmarks_set = landmarks_set
+            # TODO
+            pass
         self.iterations = iterations
         self.cardinality = len(landmarks_set)
 
@@ -68,4 +71,4 @@ class ProcrustesAnalyser:
             new_transforms, new_landmarks = align_to_reference(mean_shape, new_landmarks)
             transforms = [np.matmul(a, b) for a, b in zip(transforms, new_transforms)]
         # new_landmarks does not have the same format as the originally inputted landmarks
-        return transforms, new_landmarks
+        return transforms, new_landmarks, self.identifiers
