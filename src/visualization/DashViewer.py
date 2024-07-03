@@ -3,12 +3,11 @@ from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 
 
-class ProposalVisualizer:
-    def __init__(self, proposal):
-        self.proposal = proposal
-        self.sequence = proposal.sequence
+class MeshVisualizer:
+    def __init__(self, meshes):
+        self.meshes = meshes
         self.app = dash.Dash(__name__)
-        self.length = proposal.sequence.size(2)
+        self.length = len(meshes)
 
     def run(self):
         # Define the layout of the Dash app
@@ -37,8 +36,8 @@ class ProposalVisualizer:
         @callback(
             Output('3d-mesh', 'figure'),
             Input('custom-slider', 'value'))
-        def update_figure(proposal):
-            mesh = self.proposal.get_mesh_k(step=proposal)
+        def update_figure(mesh_to_show):
+            mesh = self.meshes[mesh_to_show]
 
             x, y, z = mesh.tensor_points.T
             i, j, k = mesh.cells[0].data.T

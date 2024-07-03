@@ -37,16 +37,19 @@ class TorchMesh(Mesh):
                                                        self.cells[0].data.astype(np.uint32), num_nodes=target)
         new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle',
                                                                                      new_triangles.astype(np.int64))])
-        return self.from_mesh(new_mesh, self.id + '_simplified_' + str(target))
+        # return self.from_mesh(new_mesh, self.id + '_simplified_' + str(target))
+        return self.from_mesh(new_mesh, self.id)
 
     def new_mesh_from_transformation(self, transformed_points):
+        # transformed_points: numpy_array
         copied_mesh = self.copy()
-        copied_mesh.tensor_points = transformed_points
-        copied_mesh.points = transformed_points.numpy()
+        copied_mesh.tensor_points = torch.tensor(transformed_points)
+        copied_mesh.points = transformed_points
         return copied_mesh
 
     def apply_transformation(self, transform):
         additional_col = np.ones((self.points.shape[0], 1))
         extended_points = np.hstack((self.points, additional_col))
-        transformed_points = extended_points @ transform
+        transformed_points = extended_points @ transform.T
+        transformed_points = transformed_points[:, :3]
         return self.new_mesh_from_transformation(transformed_points)
