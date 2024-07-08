@@ -4,10 +4,11 @@ import numpy as np
 
 import custom_io
 from custom_io.MeshIO import MeshReaderWriter
-from model.PointDistribution import PointDistributionModel
+from model.PointDistribution import PointDistributionModel, PDMParameterToMeshConverter
 from registration.Procrustes import ProcrustesAnalyser
 from src.mesh.TMesh import BatchTorchMesh
-from visualization.DashViewer import MeshVisualizer
+from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal
+from visualization.DashViewer import MeshVisualizer, ProposalVisualizer
 
 
 def run(mesh_path,
@@ -78,6 +79,16 @@ def run(mesh_path,
         batch_mesh = BatchTorchMesh.from_mesh(mesh, mesh.id)
         batch_meshes.append(batch_mesh)
 
+    model = PointDistributionModel(meshes)
+    for index, batch_mesh in enumerate(batch_meshes):
+        if index == 0:
+            random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
+            random_walk.step()
+            converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh)
+            batch_mesh = converter.update_mesh()
+            batch_meshes[index] = batch_mesh
+
+
 
 
 
@@ -86,8 +97,6 @@ def run(mesh_path,
 
     visualizer = MeshVisualizer(meshes)
     visualizer.run()
-
-    model = PointDistributionModel(meshes)
 
 
 

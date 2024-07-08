@@ -24,10 +24,13 @@ class TorchMesh(Mesh):
     def __init__(self, mesh, identifier):
         # possibly prone to errors
         arg_dict = vars(mesh)
-        arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id'}}
+        arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id', 'num_points',
+                                                                                 'dimensionality'}}
         args = list(arg_dict.values())
         super().__init__(*args)
         self.tensor_points = torch.tensor(self.points)
+        self.num_points = self.points.shape[0]
+        self.dimensionality = self.points.shape[1]
         self.id = identifier
 
     @classmethod
@@ -94,3 +97,7 @@ class BatchTorchMesh(TorchMesh):
             transformed_points[:, :, z] = extended_points[:, :, z] @ transform.T
         transformed_points = transformed_points[:, :3, :]
         return self.new_mesh_from_transformation(transformed_points)
+
+    def set_points(self, new_points):
+        self.tensor_points = torch.tensor(new_points)
+        self.points = new_points
