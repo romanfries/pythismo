@@ -3,6 +3,7 @@ import meshio
 from meshio import Mesh
 import torch
 from quad_mesh_simplify import simplify_mesh
+import warnings
 
 
 class TorchMeshIOService:
@@ -20,13 +21,14 @@ class TorchMeshIOService:
 
 
 class TorchMesh(Mesh):
-    def __init__(self, mesh, identifier, simplified=False):
+    def __init__(self, mesh, identifier):
         # possibly prone to errors
-        args = list(vars(mesh).values())
+        arg_dict = vars(mesh)
+        arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id'}}
+        args = list(arg_dict.values())
         super().__init__(*args)
         self.tensor_points = torch.tensor(self.points)
         self.id = identifier
-        self.simplified = simplified
 
     @classmethod
     def from_mesh(cls, mesh, identifier):
@@ -52,4 +54,43 @@ class TorchMesh(Mesh):
         extended_points = np.hstack((self.points, additional_col))
         transformed_points = extended_points @ transform.T
         transformed_points = transformed_points[:, :3]
+        return self.new_mesh_from_transformation(transformed_points)
+
+
+class BatchTorchMesh(TorchMesh):
+    def __init__(self, mesh, identifier, batch_size=100, batched_data=False, batched_points=None):
+        # possibly prone to errors
+        super().__init__(mesh, identifier)
+        if not batched_data:
+            self.tensor_points = self.tensor_points.unsqueeze(2).repeat(1, 1, batch_size)
+            self.points = np.repeat(self.points[:, :, np.newaxis], batch_size, axis=2)
+            self.batch_size = batch_size
+        else:
+            self.tensor_points = torch.tensor(batched_points)
+            self.points = batched_points
+            self.batch_size = self.points.shape[2]
+
+    @classmethod
+    def from_mesh(cls, mesh, identifier, batch_size=100):
+        return cls(mesh, identifier, batch_size=batch_size)
+
+    def simplify_qem(self, target=1000):
+        warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
+        return
+
+    def new_mesh_from_transformation(self, transformed_points):
+        # transformed_points: numpy_array
+        copied_mesh = self.copy()
+        copied_mesh.tensor_points = torch.tensor(transformed_points)
+        copied_mesh.points = transformed_points
+        return copied_mesh
+
+    def apply_transformation(self, transform):
+        # points_to_transform = self.points[:, :, 0]
+        additional_cols = np.ones((self.points.shape[0], 1, self.points.shape[2]))
+        extended_points = np.concatenate((self.points, additional_cols), axis=1)
+        transformed_points = np.empty_like(extended_points)
+        for z in range(extended_points.shape[2]):
+            transformed_points[:, :, z] = extended_points[:, :, z] @ transform.T
+        transformed_points = transformed_points[:, :3, :]
         return self.new_mesh_from_transformation(transformed_points)

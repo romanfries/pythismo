@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import numpy as np
+
 import custom_io
 from custom_io.MeshIO import MeshReaderWriter
 from model.PointDistribution import PointDistributionModel
 from registration.Procrustes import ProcrustesAnalyser
+from src.mesh.TMesh import BatchTorchMesh
 from visualization.DashViewer import MeshVisualizer
 
 
@@ -69,6 +72,13 @@ def run(mesh_path,
             mesh_io.write_mesh(transformed_mesh)
 
         meshes = transformed_meshes
+
+    batch_meshes = []
+    for mesh in meshes:
+        batch_mesh = BatchTorchMesh.from_mesh(mesh, mesh.id)
+        batch_meshes.append(batch_mesh)
+
+
 
 
     # random_walk = GaussianRandomWalkProposal(mesh)
