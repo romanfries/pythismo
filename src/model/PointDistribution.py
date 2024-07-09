@@ -18,8 +18,9 @@ def apply_svd(centered_points, num_components):
     return np.square(s) / (num_components - 1), np.transpose(V_T)
 
 
-def get_parameters(centered_points, eigenvectors):
-    return np.transpose(eigenvectors) @ centered_points
+def get_parameters(stacked_points, eigenvectors):
+    parameters, residuals, rank, s = np.linalg.lstsq(eigenvectors, stacked_points, rcond=None)
+    return parameters
 
 
 class PointDistributionModel:
@@ -33,6 +34,7 @@ class PointDistributionModel:
         self.sample_size = self.stacked_points.shape[1]
         # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
         self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
+        # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
         self.parameters = get_parameters(self.points_centered, self.eigenvectors)
 
     def get_eigenvalues(self):
@@ -59,8 +61,8 @@ class PDMParameterToMeshConverter:
         self.batch_mesh = batch_mesh
 
     def update_mesh(self):
-        new_points = self.model.get_eigenvectors() @ self.proposal.parameters.numpy()
-        new_points = new_points.reshape((self.batch_mesh.num_points, self.batch_mesh.dimensionality,
+        reconstructed_points = self.model.get_eigenvectors() @ self.proposal.parameters.numpy() + self.model.mean
+        reconstructed_points = reconstructed_points.reshape((self.batch_mesh.num_points, self.batch_mesh.dimensionality,
                                          self.proposal.batch_size))
-        self.batch_mesh.set_points(new_points)
+        self.batch_mesh.set_points(reconstructed_points)
         return self.batch_mesh

@@ -83,7 +83,7 @@ def run(mesh_path,
     for index, batch_mesh in enumerate(batch_meshes):
         if index == 0:
             random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
-            random_walk.step()
+            random_walk.propose()
             converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh)
             batch_mesh = converter.update_mesh()
             batch_meshes[index] = batch_mesh
@@ -95,7 +95,7 @@ def run(mesh_path,
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = MeshVisualizer(meshes)
+    visualizer = ProposalVisualizer(batch_meshes[0])
     visualizer.run()
 
 
