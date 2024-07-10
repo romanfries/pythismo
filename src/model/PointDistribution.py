@@ -74,7 +74,7 @@ class PointDistributionModel:
 
 
 class PDMParameterToMeshConverter:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_prior=50.0, sigma_lm=20.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_prior=50.0, sigma_lm=50.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -108,10 +108,18 @@ class PDMParameterToMeshConverter:
             posterior_unnormalized = torch.sum(torch.cat((log_likelihoods, log_prior), dim=0), dim=0)
 
         else:
-            # target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size)
-            # distances = torch.sum(torch.pow(torch.sub(self.points, target_points_expanded), float(2)), dim=1)
-
-            pass
+            target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size).unsqueeze(0)
+            points_expanded = self.points.unsqueeze(1)
+            distances = torch.sub(points_expanded, target_points_expanded)
+            closest_points = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=0)
+            distances = distances[closest_points, torch.arange(1000).unsqueeze(1).expand(1000, 100), :, torch.arange(100)]
+            zero_mean = torch.zeros(3)
+            covariance = torch.diag(self.sigma_lm * torch.ones(3))
+            likelihoods = batch_multivariate_gaussian_pdf(3, torch.transpose(distances, 1, 2), zero_mean, covariance)
+            log_likelihoods = torch.log(likelihoods)
+            prior = gaussian_pdf(self.proposal.parameters, sigma=self.sigma_prior)
+            log_prior = torch.log(prior)
+            posterior_unnormalized = torch.sum(torch.cat((log_likelihoods, log_prior), dim=0), dim=0)
 
         return
 

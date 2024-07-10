@@ -43,11 +43,11 @@ def run(mesh_path,
                                                                                             '-aligned-new'
         transformed_path.mkdir(parents=True, exist_ok=True)
         for mesh, transform, _ in joined_meshes_transforms:
-            transformed_mesh = mesh.apply_transformation(transform)
-            transformed_meshes.append(transformed_mesh)
-            file_name = str(transformed_mesh.id) + '.stl'
+            mesh.apply_transformation(transform)
+            transformed_meshes.append(mesh)
+            file_name = str(mesh.id) + '.stl'
             mesh_io = MeshReaderWriter(transformed_path / file_name)
-            mesh_io.write_mesh(transformed_mesh)
+            mesh_io.write_mesh(mesh)
 
         meshes = transformed_meshes
 
@@ -67,7 +67,7 @@ def run(mesh_path,
         transformed_path = Path.cwd().parent / 'datasets' / 'femur-data' / 'project-data' / 'meshes-simplified-aligned'
         transformed_path.mkdir(parents=True, exist_ok=True)
         for mesh, new_points, _ in joined_meshes_new_points:
-            transformed_mesh = mesh.new_mesh_from_transformation(new_points)
+            transformed_mesh = mesh.set_points(new_points)
             transformed_meshes.append(transformed_mesh)
             file_name = str(transformed_mesh.id) + 'stl'
             mesh_io = MeshReaderWriter(transformed_path / file_name)
@@ -85,7 +85,7 @@ def run(mesh_path,
         if index == 0:
             random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
             random_walk.propose()
-            converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh, meshes[45])
+            converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh, meshes[45], correspondences=True)
             converter.verify()
             batch_meshes[index] = batch_mesh
 
