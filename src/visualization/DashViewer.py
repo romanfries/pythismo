@@ -1,4 +1,5 @@
 import dash
+import numpy as np
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 
@@ -10,6 +11,9 @@ class MeshVisualizer:
         self.length = len(meshes)
 
     def run(self):
+        concatenated_points = np.concatenate([mesh.points.flatten() for mesh in self.meshes])
+        display_range = [np.min(concatenated_points), np.max(concatenated_points)]
+
         # Define the layout of the Dash app
         self.app.layout = html.Div([
             html.Div([
@@ -56,7 +60,10 @@ class MeshVisualizer:
 
             mesh_figure.update_layout(
                 scene=dict(
-                    aspectmode='cube'
+                    aspectmode='cube',
+                    xaxis=dict(nticks=100, range=display_range),
+                    yaxis=dict(nticks=100, range=display_range),
+                    zaxis=dict(nticks=100, range=display_range),
                 )
             )
 
@@ -72,6 +79,9 @@ class ProposalVisualizer:
         self.length = mesh.batch_size
 
     def run(self):
+        display_range = [np.min(self.mesh.points), np.max(self.mesh.points)]
+
+
         # Define the layout of the Dash app
         self.app.layout = html.Div([
             html.Div([
@@ -117,7 +127,10 @@ class ProposalVisualizer:
 
             mesh_figure.update_layout(
                 scene=dict(
-                    aspectmode='cube'
+                    aspectmode='cube',
+                    xaxis=dict(nticks=100, range=display_range),
+                    yaxis=dict(nticks=100, range=display_range),
+                    zaxis=dict(nticks=100, range=display_range),
                 )
             )
 

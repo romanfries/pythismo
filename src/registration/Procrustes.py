@@ -45,6 +45,7 @@ class ProcrustesAnalyser:
             # clarifies to which mesh these landmarks belong.
             self.reference, self.landmarks_set, self.identifiers = prepare_landmark_json(reference, landmarks_set)
         elif data_format == 'meshio_mesh':
+            # Important: Only functions as desired if correspondences are given
             self.landmarks_set = []
             self.identifiers = []
             for mesh in landmarks_set:

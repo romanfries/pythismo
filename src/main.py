@@ -52,6 +52,7 @@ def run(mesh_path,
         meshes = transformed_meshes
 
     elif align_meshes:
+        # Problem: Correspondences are not given!
         mesh_aligner = ProcrustesAnalyser(meshes, data_format="meshio_mesh")
         _, new_points, identifiers = mesh_aligner.generalised_procrustes_alignment()
 
@@ -84,8 +85,8 @@ def run(mesh_path,
         if index == 0:
             random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
             random_walk.propose()
-            converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh)
-            batch_mesh = converter.update_mesh()
+            converter = PDMParameterToMeshConverter(model, random_walk, batch_mesh, meshes[45])
+            converter.verify()
             batch_meshes[index] = batch_mesh
 
 
@@ -95,7 +96,7 @@ def run(mesh_path,
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = ProposalVisualizer(batch_meshes[0])
+    visualizer = MeshVisualizer(meshes)
     visualizer.run()
 
 

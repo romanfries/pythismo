@@ -59,6 +59,9 @@ class TorchMesh(Mesh):
         transformed_points = transformed_points[:, :3]
         return self.new_mesh_from_transformation(transformed_points)
 
+    def center_of_mass(self):
+        return np.sum(self.points, axis=0) / self.num_points
+
 
 class BatchTorchMesh(TorchMesh):
     def __init__(self, mesh, identifier, batch_size=100, batched_data=False, batched_points=None):

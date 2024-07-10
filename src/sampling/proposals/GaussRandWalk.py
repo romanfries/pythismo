@@ -15,6 +15,8 @@ class GaussianRandomWalkProposal:
 
         return
 
+    def verify(self):
+        return
     def get_parameters(self):
         return self.parameters
 
