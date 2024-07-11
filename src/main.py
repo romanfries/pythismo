@@ -85,15 +85,16 @@ def run(mesh_path,
         if index == 0:
             random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
             converter = PDMMetropolisSampler(model, random_walk, batch_mesh, meshes[45], correspondences=False)
-            for i in range(10):
+            for i in range(100):
                 converter.propose()
                 converter.determine_quality()
                 converter.decide()
+                print(converter.acceptance_ratio())
 
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = MeshVisualizer(meshes)
+    visualizer = ProposalVisualizer(batch_meshes[0])
     print(converter.acceptance_ratio())
     visualizer.run()
 

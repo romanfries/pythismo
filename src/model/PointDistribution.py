@@ -93,7 +93,7 @@ class PointDistributionModel:
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=50.0, sigma_prior=50.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=10.0, sigma_prior=10000.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -133,7 +133,8 @@ class PDMMetropolisSampler:
         self.posterior = posterior
 
     def decide(self):
-        ratio = self.posterior / self.old_posterior
+        # log-ratio!
+        ratio = self.old_posterior / self.posterior
         probabilities = torch.min(ratio, torch.ones_like(ratio))
         randoms = torch.rand(self.batch_size)
         decider = torch.gt(probabilities, randoms)
