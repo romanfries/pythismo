@@ -23,6 +23,7 @@ class GaussianRandomWalkProposal:
         self.parameters = torch.tensor(np.tile(starting_parameters[:, np.newaxis], (1, self.batch_size)))
         self.num_parameters = self.parameters.shape[0]
         self.sigma = sigma
+        self.old_parameters = None
 
     def propose(self):
         """
@@ -31,6 +32,7 @@ class GaussianRandomWalkProposal:
         :rtype: None
         """
         perturbations = torch.randn((self.num_parameters, self.batch_size))
+        self.old_parameters = self.parameters
         self.parameters = self.parameters + perturbations * self.sigma
 
     def get_parameters(self):
@@ -41,3 +43,8 @@ class GaussianRandomWalkProposal:
         :rtype: torch.Tensor
         """
         return self.parameters
+
+    def update_parameters(self, decider):
+        self.parameters = torch.where(decider.unsqueeze(0), self.parameters,
+                                      self.old_parameters)
+        self.old_parameters = None

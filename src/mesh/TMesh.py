@@ -128,6 +128,7 @@ class BatchTorchMesh(TorchMesh):
             self.tensor_points = torch.tensor(batched_points)
             self.points = batched_points
             self.batch_size = self.points.shape[2]
+        self.old_points = None
 
     @classmethod
     def from_mesh(cls, mesh, identifier, batch_size=100):
@@ -143,7 +144,7 @@ class BatchTorchMesh(TorchMesh):
         warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
         return
 
-    def set_points(self, transformed_points):
+    def set_points(self, transformed_points, save_old=False):
         """
         The method for changing the points of the mesh. It ensures that the information of the mesh instance remains
         consistent, i.e. the same points are saved in both point fields (points, tensor_points).  The cells (triangles)
@@ -152,11 +153,16 @@ class BatchTorchMesh(TorchMesh):
         :param transformed_points: The new coordinates of the points. The shape of the
          np.ndarray has to be (num_points, 3, batch_size)
         :type transformed_points: np.ndarray
+        :param save_old:
+        :type save_old:
         :return: None
         :rtype: None
         """
         # transformed_points: numpy_array
-        # Note: Only Docstring differs!
+        if save_old:
+            self.old_points = self.tensor_points
+        else:
+            self.old_points = None
         self.tensor_points = torch.tensor(transformed_points)
         self.points = transformed_points
 
@@ -177,3 +183,9 @@ class BatchTorchMesh(TorchMesh):
             transformed_points[:, :, z] = extended_points[:, :, z] @ transform.T
         transformed_points = transformed_points[:, :3, :]
         self.set_points(transformed_points)
+
+    def update_points(self, decider):
+        self.tensor_points = torch.where(decider.unsqueeze(0).unsqueeze(1), self.tensor_points,
+                                         self.old_points)
+        self.points = self.tensor_points.numpy()
+        self.old_points = None
