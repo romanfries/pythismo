@@ -71,15 +71,16 @@ class BatchMeshVisualizer:
 
 
 class ModelVisualizer:
-    def __init__(self, app, model):
+    def __init__(self, app, model, target):
         self.app = app
         self.model = model
+        self.target = target
         self.num_parameters = self.model.sample_size
         self.parameters = np.zeros(self.num_parameters)
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [np.min(self.model.meshes[0].points), np.max(self.model.meshes[0].points)]
+        display_range = [1.2*np.min(self.model.mean), 1.2*np.max(self.model.mean)]
         sliders = []
         for i in range(self.num_parameters):
             sliders.append(html.Label(f'Parameter {i + 1}', style={'font-size': '10px'}))
@@ -114,7 +115,7 @@ class ModelVisualizer:
         def update_mesh(*parameters):
             params = np.asarray(parameters)
             x, y, z = np.transpose(self.model.get_points_from_parameters(params))
-            i, j, k = self.model.meshes[0].cells[0].data.T
+            i, j, k = self.target.cells[0].data.T
             mesh_figure = go.Figure(data=[
                 go.Mesh3d(
                     x=x,
@@ -151,7 +152,7 @@ class ChainVisualizer:
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [np.min(self.sampler.model.meshes[0].points), np.max(self.sampler.model.meshes[0].points)]
+        display_range = [1.2*np.min(self.sampler.model.mean), 1.2*np.max(self.sampler.model.mean)]
         layout = html.Div([
             html.H1("3D Markov Chain Viewer", style={'text-align': 'center'}),
             html.Div([
@@ -191,7 +192,7 @@ class ChainVisualizer:
         def update_display(batch, chain_element):
             params = np.asarray(self.parameters[:, batch, chain_element])
             x, y, z = np.transpose(self.sampler.model.get_points_from_parameters(params))
-            i, j, k = self.sampler.model.meshes[0].cells[0].data.T
+            i, j, k = self.sampler.target.cells[0].data.T
 
             x_ref, y_ref, z_ref = np.transpose(self.sampler.target_points)
 
@@ -236,7 +237,7 @@ class MainVisualizer:
     def __init__(self, mesh, model, sampler):
         self.app = dash.Dash(__name__, suppress_callback_exceptions=True)
         self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
-        self.model_visualizer = ModelVisualizer(self.app, model)
+        self.model_visualizer = ModelVisualizer(self.app, model, sampler.target)
         self.chain_visualizer = ChainVisualizer(self.app, sampler)
         self.setup_layout()
         self.setup_callbacks()

@@ -6,14 +6,16 @@ import custom_io
 from custom_io.MeshIO import MeshReaderWriter
 from model.PointDistribution import PointDistributionModel, PDMMetropolisSampler
 from registration.Procrustes import ProcrustesAnalyser
+from src.custom_io.H5ModelIO import ModelReader
 from src.mesh.TMesh import BatchTorchMesh
 from src.registration.IterativeClosestPoints import ICPAnalyser
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal
-from visualization.DashViewer import MeshVisualizer, BatchMeshVisualizer, MainVisualizer
+from visualization.DashViewer import MainVisualizer
 
 
 def run(mesh_path,
         landmark_path=None,
+        reference_lm_path=None,
         reference_path=None,
         simplify_meshes=False,
         read_landmarks=False,
@@ -25,7 +27,7 @@ def run(mesh_path,
         meshes = custom_io.read_meshes(mesh_path)
 
     if read_landmarks:
-        reference, landmarks = custom_io.read_landmarks_with_reference(reference_path, landmark_path)
+        reference, landmarks = custom_io.read_landmarks_with_reference(reference_lm_path, landmark_path)
 
     if read_landmarks and align_meshes:
         landmark_aligner = ProcrustesAnalyser(landmarks, reference)
@@ -85,21 +87,39 @@ def run(mesh_path,
         batch_mesh = BatchTorchMesh.from_mesh(mesh, mesh.id)
         batch_meshes.append(batch_mesh)
 
-    model = PointDistributionModel(meshes)
-    for index, batch_mesh in enumerate(batch_meshes):
-        if index == 0:
-            random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
-            converter = PDMMetropolisSampler(model, random_walk, batch_mesh, meshes[46], correspondences=True)
-            for i in range(2):
-                converter.propose()
-                converter.determine_quality()
-                converter.decide()
-                print(converter.acceptance_ratio())
+    # model = PointDistributionModel(meshes)
+    model_writer = ModelReader("datasets/models")
+    reference = custom_io.read_meshes(reference_path)[0]
+    target = reference.copy()
+    read_model = model_writer.get_model()
+    reference.set_points(read_model.get_points_from_parameters(np.zeros(read_model.sample_size)))
+    batched_reference = BatchTorchMesh(reference, 'reference', batch_size=200)
+
+    random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(read_model.sample_size))
+    sampler = PDMMetropolisSampler(read_model, random_walk, batched_reference, target, correspondences=True)
+    for i in range(1000):
+        if i % 10000 == 0:
+            print(i)
+        sampler.propose()
+        sampler.determine_quality()
+        sampler.decide()
+
+    # create new batch mesh with mean shape of the model
+
+    # for index, batch_mesh in enumerate(batch_meshes):
+    #    if index == 0:
+    #        random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
+    #        converter = PDMMetropolisSampler(model, random_walk, batch_mesh, meshes[46], correspondences=True)
+    #        for i in range(2):
+    #            converter.propose()
+    #            converter.determine_quality()
+    #            converter.decide()
+    #            print(converter.acceptance_ratio())
 
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = MainVisualizer(batch_meshes[0], model, converter)
+    visualizer = MainVisualizer(batched_reference, read_model, sampler)
     # print(converter.acceptance_ratio())
     visualizer.run()
 
@@ -115,7 +135,8 @@ if __name__ == "__main__":
     main = Main()
     run("datasets/femur-data/project-data/registered",
         landmark_path="datasets/femur-data/project-data/landmarks",
-        reference_path="datasets/femur-data/project-data/reference-landmarks",
+        reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
+        reference_path="datasets/femur-data/project-data/reference-decimated",
         simplify_meshes=False,
         read_landmarks=False,
         align_meshes=False)

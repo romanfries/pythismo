@@ -62,19 +62,31 @@ def unnormalised_posterior(distances, parameters, sigma_lm, sigma_prior):
 
 
 class PointDistributionModel:
-    def __init__(self, meshes):
-        self.meshes = meshes
-        self.stacked_points = extract_points(self.meshes)
-        self.mean = np.mean(self.stacked_points, axis=1)[:, np.newaxis]
-        self.points_centered = self.stacked_points - self.mean
-        # Avoid explicit representation of the covariance matrix
-        # self.covariance = np.cov(self.stacked_points)
-        self.sample_size = self.stacked_points.shape[1]
-        # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
-        self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
-        self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
-        # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
-        self.parameters = get_parameters(self.points_centered, self.components)
+    def __init__(self, meshes=None, read_in=False, model=None):
+        if not read_in:
+            self.meshes = meshes
+            self.stacked_points = extract_points(self.meshes)
+            self.mean = np.mean(self.stacked_points, axis=1)[:, np.newaxis]
+            self.points_centered = self.stacked_points - self.mean
+            # Avoid explicit representation of the covariance matrix
+            # self.covariance = np.cov(self.stacked_points)
+            self.sample_size = self.stacked_points.shape[1]
+            # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
+            self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
+            self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
+            # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
+            self.parameters = get_parameters(self.points_centered, self.components)
+        else:
+            self.meshes = None
+            self.stacked_points = None
+            # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
+            # did not work. Why?
+            self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
+            self.sample_size = model.get('basis').shape[1]
+            self.eigenvalues = model.get('var')
+            self.eigenvectors = model.get('basis')
+            self.components = self.eigenvectors * model.get('std')
+            self.parameters = None
 
     def get_eigenvalues(self):
         return self.eigenvalues
@@ -154,9 +166,3 @@ class PDMMetropolisSampler:
 
     def acceptance_ratio(self):
         return float(self.accepted) / (self.accepted + self.rejected)
-
-
-
-
-
-
