@@ -99,7 +99,7 @@ def run(mesh_path,
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = MainVisualizer(batch_meshes[0], model)
+    visualizer = MainVisualizer(batch_meshes[0], model, converter)
     # print(converter.acceptance_ratio())
     visualizer.run()
 
