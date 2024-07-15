@@ -4,7 +4,7 @@ from pathlib import Path
 from src.mesh.TMesh import TorchMeshIOService
 
 
-def read_and_simplify_meshes(read_path, write_path, target=1000):
+def read_and_simplify_meshes(read_path, write_path, target=200):
     rel_read_path = Path(read_path)
     rel_write_path = Path(write_path)
     read_path = Path.cwd().parent / rel_read_path

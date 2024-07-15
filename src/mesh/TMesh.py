@@ -117,7 +117,7 @@ class TorchMesh(Mesh):
 
 
 class BatchTorchMesh(TorchMesh):
-    def __init__(self, mesh, identifier, batch_size=100, batched_data=False, batched_points=None):
+    def __init__(self, mesh, identifier, batch_size=50, batched_data=False, batched_points=None):
         # possibly prone to errors
         super().__init__(mesh, identifier)
         if not batched_data:

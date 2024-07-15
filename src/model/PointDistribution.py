@@ -19,8 +19,8 @@ def apply_svd(centered_points, num_components):
     return np.square(s) / (num_components - 1), np.transpose(V_T)
 
 
-def get_parameters(stacked_points, eigenvectors):
-    parameters, residuals, rank, s = np.linalg.lstsq(eigenvectors, stacked_points, rcond=None)
+def get_parameters(stacked_points, components):
+    parameters, residuals, rank, s = np.linalg.lstsq(components, stacked_points, rcond=None)
     return parameters
 
 
@@ -37,7 +37,7 @@ def batch_multivariate_gaussian_pdf(k, points, mean, covariance):
     det = torch.det(covariance)
     inv = torch.inverse(covariance).double()
     normalization = 1.0 / torch.sqrt(torch.pow(torch.tensor(2 * torch.pi), float(k)) * det)
-    points_centered = points - mean
+    points_centered = (points - mean).double()
     exponent = -0.5 * torch.einsum('ijk,jl,ilk->ik', points_centered, inv, points_centered)
     return normalization * torch.exp(exponent)
 
@@ -72,8 +72,9 @@ class PointDistributionModel:
         self.sample_size = self.stacked_points.shape[1]
         # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
         self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
+        self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
         # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
-        self.parameters = get_parameters(self.points_centered, self.eigenvectors)
+        self.parameters = get_parameters(self.points_centered, self.components)
 
     def get_eigenvalues(self):
         return self.eigenvalues
@@ -81,19 +82,25 @@ class PointDistributionModel:
     def get_eigenvalue_k(self, k):
         return self.eigenvalues[k]
 
-    def get_eigenvectors(self):
-        return self.eigenvectors
+    def get_components(self):
+        return self.components
 
-    def get_eigenvector_k(self, k):
-        return self.eigenvectors[:, k]
+    def get_component_k(self, k):
+        return self.components[:, k]
 
     def get_points_from_parameters(self, parameters):
-        stacked_points = np.transpose(parameters) @ np.transpose(self.eigenvectors)
-        return stacked_points.reshape((-1, 3))
+        if parameters.ndim == 1:
+            parameters = parameters[:, np.newaxis]
+        batch_size = parameters.shape[1]
+        stacked_points = self.components @ parameters + self.mean
+        if batch_size == 1:
+            return stacked_points.reshape((-1, 3))
+        else:
+            return stacked_points.reshape((-1, 3, batch_size))
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=10.0, sigma_prior=10000.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=0.1, sigma_prior=1.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -114,9 +121,7 @@ class PDMMetropolisSampler:
         self.proposal.propose()
 
     def update_mesh(self):
-        reconstructed_points = self.model.get_eigenvectors() @ self.proposal.get_parameters().numpy() + self.model.mean
-        reconstructed_points = reconstructed_points.reshape((self.batch_mesh.num_points, self.batch_mesh.dimensionality,
-                                                             self.proposal.batch_size))
+        reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
         self.batch_mesh.set_points(reconstructed_points, save_old=True)
         self.points = self.batch_mesh.tensor_points
 
@@ -134,12 +139,13 @@ class PDMMetropolisSampler:
 
     def decide(self):
         # log-ratio!
-        ratio = self.old_posterior / self.posterior
+        ratio = torch.exp(self.posterior - self.old_posterior)
         probabilities = torch.min(ratio, torch.ones_like(ratio))
         randoms = torch.rand(self.batch_size)
         decider = torch.gt(probabilities, randoms)
+        # decider = torch.ones(self.batch_size).bool()
 
-        self.proposal.update_parameters(decider)
+        self.proposal.update(decider)
         self.batch_mesh.update_points(decider)
         self.points = self.batch_mesh.tensor_points
 

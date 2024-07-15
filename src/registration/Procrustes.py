@@ -45,7 +45,8 @@ class ProcrustesAnalyser:
             # clarifies to which mesh these landmarks belong.
             self.reference, self.landmarks_set, self.identifiers = prepare_landmark_json(reference, landmarks_set)
         elif data_format == 'meshio_mesh':
-            # Important: Only functions as desired if correspondences are given
+            # Important: Only functions as desired if correspondences are given and should therefore be used with
+            # caution!
             self.landmarks_set = []
             self.identifiers = []
             for mesh in landmarks_set:
@@ -53,8 +54,7 @@ class ProcrustesAnalyser:
                 self.identifiers.append(mesh.id)
             self.reference = self.landmarks_set[0]
         else:
-            # TODO
-            pass
+            raise NotImplementedError('Procrustes analysis not implemented for this data format.')
         self.data_format = data_format
         self.iterations = iterations
         self.cardinality = len(landmarks_set)
@@ -72,8 +72,15 @@ class ProcrustesAnalyser:
         transforms = [np.matmul(a, b) for a, b in zip(transforms, new_transforms)]
         # The initial reference is not used any further!
 
+        # Reinsert the reference
+        if self.data_format == 'landmark_list':
+            transforms.append(np.identity(4))
+            new_transforms.append(np.identity(4))
+            new_landmarks.append(np.array(self.reference))
+            self.identifiers.append('reference')
+
         # 3: Compute the mean shape \Gamma_{\mu} for the set of aligned shapes
-        for j in range(self.iterations):
+        for j in range(self.iterations - 1):
             mean_shape = calculate_mean_shape(new_landmarks)
 
             # 4: Iterate using the mean shape as the new reference shape

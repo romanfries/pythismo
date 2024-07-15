@@ -7,8 +7,9 @@ from custom_io.MeshIO import MeshReaderWriter
 from model.PointDistribution import PointDistributionModel, PDMMetropolisSampler
 from registration.Procrustes import ProcrustesAnalyser
 from src.mesh.TMesh import BatchTorchMesh
+from src.registration.IterativeClosestPoints import ICPAnalyser
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal
-from visualization.DashViewer import MeshVisualizer, ProposalVisualizer
+from visualization.DashViewer import MeshVisualizer, BatchMeshVisualizer, MainVisualizer
 
 
 def run(mesh_path,
@@ -17,7 +18,6 @@ def run(mesh_path,
         simplify_meshes=False,
         read_landmarks=False,
         align_meshes=False):
-
     if simplify_meshes:
         write_path = Path(mesh_path).parent / 'meshes-simplified'
         original_meshes, meshes = custom_io.read_and_simplify_meshes(mesh_path, write_path)
@@ -40,16 +40,21 @@ def run(mesh_path,
 
         transformed_meshes = []
         transformed_path = Path.cwd().parent / 'datasets' / 'femur-data' / 'project-data' / 'meshes-simplified' \
-                                                                                            '-aligned-new'
+                                                                                            '-aligned'
         transformed_path.mkdir(parents=True, exist_ok=True)
         for mesh, transform, _ in joined_meshes_transforms:
             mesh.apply_transformation(transform)
             transformed_meshes.append(mesh)
+
+        meshes = transformed_meshes
+
+        icp_aligner = ICPAnalyser(meshes)
+        icp_aligner.icp()
+
+        for mesh, _, _ in joined_meshes_transforms:
             file_name = str(mesh.id) + '.stl'
             mesh_io = MeshReaderWriter(transformed_path / file_name)
             mesh_io.write_mesh(mesh)
-
-        meshes = transformed_meshes
 
     elif align_meshes:
         # Problem: Correspondences are not given!
@@ -84,8 +89,8 @@ def run(mesh_path,
     for index, batch_mesh in enumerate(batch_meshes):
         if index == 0:
             random_walk = GaussianRandomWalkProposal(batch_mesh.batch_size, model.parameters[:, index])
-            converter = PDMMetropolisSampler(model, random_walk, batch_mesh, meshes[45], correspondences=False)
-            for i in range(100):
+            converter = PDMMetropolisSampler(model, random_walk, batch_mesh, meshes[46], correspondences=True)
+            for i in range(2):
                 converter.propose()
                 converter.determine_quality()
                 converter.decide()
@@ -94,8 +99,8 @@ def run(mesh_path,
     # random_walk = GaussianRandomWalkProposal(mesh)
     # random_walk.apply()
 
-    visualizer = ProposalVisualizer(batch_meshes[0])
-    print(converter.acceptance_ratio())
+    visualizer = MainVisualizer(batch_meshes[0], model)
+    # print(converter.acceptance_ratio())
     visualizer.run()
 
     print('Successful')
@@ -108,7 +113,7 @@ class Main:
 
 if __name__ == "__main__":
     main = Main()
-    run("datasets/femur-data/project-data/meshes-simplified-aligned",
+    run("datasets/femur-data/project-data/registered",
         landmark_path="datasets/femur-data/project-data/landmarks",
         reference_path="datasets/femur-data/project-data/reference-landmarks",
         simplify_meshes=False,
