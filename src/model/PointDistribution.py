@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import torch
 
@@ -53,6 +55,15 @@ def distance_to_closest_point(ref_points, target_points, batch_size):
     return torch.transpose(distances, 1, 2)
 
 
+def index_of_closest_point(ref_points, target_points, batch_size):
+    target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(
+        0)
+    points_expanded = ref_points.unsqueeze(1)
+    distances = torch.sub(points_expanded, target_points_expanded)
+    closest_points = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=1)
+    return closest_points
+
+
 def unnormalised_posterior(distances, parameters, sigma_lm, sigma_prior):
     likelihoods = batch_multivariate_gaussian_pdf(3, distances, torch.zeros(3), torch.diag(sigma_lm * torch.ones(3)))
     log_likelihoods = torch.log(likelihoods)
@@ -70,18 +81,23 @@ class PointDistributionModel:
             self.points_centered = self.stacked_points - self.mean
             # Avoid explicit representation of the covariance matrix
             # self.covariance = np.cov(self.stacked_points)
+            # Dimensionality of 3 hardcoded here!
+            self.num_points = self.stacked_points.shape[0] / 3
             self.sample_size = self.stacked_points.shape[1]
             # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
             self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
             self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
             self.parameters = get_parameters(self.points_centered, self.components)
+            self.decimated = False
         else:
             self.meshes = None
             self.stacked_points = None
             # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
             # did not work. Why?
             self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
+            self.points_centered = None
+            self.num_points = self.mean.shape[0] / 3
             self.sample_size = model.get('basis').shape[1]
             self.eigenvalues = model.get('var')
             self.eigenvectors = model.get('basis')
@@ -110,9 +126,43 @@ class PointDistributionModel:
         else:
             return stacked_points.reshape((-1, 3, batch_size))
 
+    def decimate(self, decimation_target=200):
+
+        reference_decimated = self.meshes[0]
+        if self.meshes is None:
+            warnings.warn("Warning: Decimation of imported Point Distribution Models is not (yet) supported.",
+                          UserWarning)
+            return reference_decimated
+
+        if self.num_points <= decimation_target:
+            warnings.warn("Warning: No decimation necessary, as the target is below the current number of points.",
+                          UserWarning)
+            return reference_decimated
+
+        if self.decimated:
+            warnings.warn("Warning: Point Distribution Model can only be decimated once.",
+                          UserWarning)
+            return reference_decimated
+
+        reference_decimated = self.meshes[0].simplify_qem(decimation_target)
+        closest_points = index_of_closest_point(reference_decimated.tensor_points.unsqueeze(2), torch.tensor(self.mean.reshape(-1, 3)), batch_size=1)
+        closest_points_flat = closest_points.flatten() * 3
+        indices = np.vstack((closest_points_flat, closest_points_flat + 1, closest_points_flat + 2)).T.flatten()
+        self.meshes = None
+        self.stacked_points = None
+        self.points_centered = None
+        self.num_points = reference_decimated.num_points
+        self.mean = self.mean[indices]
+        self.eigenvectors = self.eigenvectors[indices, :]
+        self.components = self.components[indices, :]
+        self.parameters = None
+        self.decimated = True
+
+        return reference_decimated
+
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=0.1, sigma_prior=1.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=3.0, sigma_prior=1.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -145,6 +195,7 @@ class PDMMetropolisSampler:
             distances = torch.sub(self.points, target_points_expanded)
             posterior = unnormalised_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
         else:
+            # Target is a point cloud, reference a mesh.
             distances = distance_to_closest_point(self.points, self.target_points, self.batch_size)
             posterior = unnormalised_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
         self.posterior = posterior
