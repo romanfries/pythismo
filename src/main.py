@@ -1,7 +1,11 @@
+import threading
+import time
 import warnings
 from pathlib import Path
 
+import os
 import numpy as np
+from flask import request
 
 import custom_io
 from custom_io.MeshIO import MeshReaderWriter
@@ -23,6 +27,7 @@ def run(mesh_path,
         simplify_model=False,
         registered=False,
         write_meshes=False):
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     if read_model:
         rel_model_path = Path(model_path)
         model_path = Path.cwd().parent / rel_model_path
@@ -40,6 +45,8 @@ def run(mesh_path,
             sampler.propose()
             sampler.determine_quality()
             sampler.decide()
+
+        return batched_reference, model, sampler
 
     else:
         meshes = custom_io.read_meshes(mesh_path)
@@ -86,17 +93,17 @@ def run(mesh_path,
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=10)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         for i in range(10001):
             sampler.propose()
             sampler.determine_quality()
             sampler.decide()
 
-    visualizer = MainVisualizer(batched_reference, model, sampler)
-    # print(converter.acceptance_ratio())
-    visualizer.run()
+        return batched_reference, model, sampler
 
-    print('Successful')
+
+def dash(visualizer):
+    visualizer.run()
 
 
 class Main:
@@ -106,13 +113,28 @@ class Main:
 
 if __name__ == "__main__":
     main = Main()
-    run("datasets/femur-data/project-data/meshes",
+    batched_reference, model, sampler = run("datasets/femur-data/project-data/meshes",
         landmark_path="datasets/femur-data/project-data/landmarks",
         reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
         reference_path="datasets/femur-data/project-data/reference-decimated",
         model_path="datasets/models",
-        read_model=False,
-        simplify_model=True,
-        registered=False,
+        read_model=True,
+        simplify_model=False,
+        registered=True,
         write_meshes=False
         )
+    visualizer = MainVisualizer(batched_reference, model, sampler)
+    # print(converter.acceptance_ratio())
+    dash_thread = threading.Thread(target=dash(visualizer))
+    dash_thread.start()
+    dash_thread.run()
+
+    try:
+        while True:
+            print("Dash server running in the background.")
+            time.sleep(100)
+    except KeyboardInterrupt:
+        import requests
+
+        requests.post('http://127.0.0.1:8050/shutdown')
+        dash_thread.join()

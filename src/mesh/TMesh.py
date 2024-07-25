@@ -1,5 +1,6 @@
 import numpy as np
 import meshio
+import pytorch3d
 from meshio import Mesh
 import torch
 from quad_mesh_simplify import simplify_mesh
@@ -115,6 +116,10 @@ class TorchMesh(Mesh):
         """
         return np.sum(self.points, axis=0) / self.num_points
 
+    def to_pytorch3d_pointclouds(self, batch_size=1):
+        points = self.tensor_points.unsqueeze(0).repeat(batch_size, 1, 1)
+        return pytorch3d.structures.Pointclouds(points)
+
 
 class BatchTorchMesh(TorchMesh):
     def __init__(self, mesh, identifier, batch_size=50, batched_data=False, batched_points=None):
@@ -189,3 +194,9 @@ class BatchTorchMesh(TorchMesh):
                                          self.old_points)
         self.points = self.tensor_points.numpy()
         self.old_points = None
+
+    def to_pytorch3d_meshes(self):
+        verts = torch.permute(self.tensor_points, (2, 0, 1))
+        tensor_cells = torch.tensor(self.cells_dict['triangle'])
+        faces = tensor_cells.unsqueeze(0).repeat(self.batch_size, 1, 1)
+        return pytorch3d.structures.Meshes(verts, faces)

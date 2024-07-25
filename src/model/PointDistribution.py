@@ -3,6 +3,8 @@ import warnings
 import numpy as np
 import torch
 
+from pytorch3d.loss.point_mesh_distance import point_face_distance
+
 
 def extract_points(meshes):
     for index, mesh in enumerate(meshes):
@@ -37,9 +39,9 @@ def batch_multivariate_gaussian_pdf(k, points, mean, covariance):
     # for every point of a batch mesh.
     mean = mean.unsqueeze(0).unsqueeze(2)
     det = torch.det(covariance)
-    inv = torch.inverse(covariance).double()
+    inv = torch.inverse(covariance)
     normalization = 1.0 / torch.sqrt(torch.pow(torch.tensor(2 * torch.pi), float(k)) * det)
-    points_centered = (points - mean).double()
+    points_centered = (points - mean)
     exponent = -0.5 * torch.einsum('ijk,jl,ilk->ik', points_centered, inv, points_centered)
     return normalization * torch.exp(exponent)
 
@@ -64,12 +66,20 @@ def index_of_closest_point(ref_points, target_points, batch_size):
     return closest_points
 
 
-def unnormalised_posterior(distances, parameters, sigma_lm, sigma_prior):
-    likelihoods = batch_multivariate_gaussian_pdf(3, distances, torch.zeros(3), torch.diag(sigma_lm * torch.ones(3)))
+def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
+    likelihoods = batch_multivariate_gaussian_pdf(3, differences, torch.zeros(3, dtype=torch.float64), torch.diag(sigma_lm * torch.ones(3, dtype=torch.float64)))
     log_likelihoods = torch.log(likelihoods)
     prior = gaussian_pdf(parameters, sigma=sigma_prior)
     log_prior = torch.log(prior)
     return torch.sum(torch.cat((log_likelihoods, log_prior), dim=0), dim=0)
+
+
+def unnormalised_log_posterior(distances, parameters, sigma_lm, sigma_prior):
+    distances_squared = torch.pow(distances, 2)
+    log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
+    log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_prior, 2), dim=0)
+    return log_likelihoods + log_prior
+
 
 
 class PointDistributionModel:
@@ -192,12 +202,32 @@ class PDMMetropolisSampler:
         self.old_posterior = self.posterior
         if self.correspondences:
             target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size)
-            distances = torch.sub(self.points, target_points_expanded)
-            posterior = unnormalised_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            differences = torch.sub(self.points, target_points_expanded)
+            # old draft
+            # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            distances = torch.linalg.vector_norm(differences, dim=1)
+            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+
         else:
+            reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
+            target_clouds = self.target.to_pytorch3d_pointclouds(self.batch_size)
+            # packed representation for faces
+            verts_packed = reference_meshes.verts_packed()
+            faces_packed = reference_meshes.faces_packed()
+            tris = verts_packed[faces_packed]  # (T, 3, 3)
+            tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
+            max_tris = reference_meshes.num_faces_per_mesh().max().item()
+
+            points = target_clouds.points_packed()  # (P, 3)
+            points_first_idx = target_clouds.cloud_to_packed_first_idx()
+
+            # point to face squared distance: shape (P,)
+            # requires dtype=torch.float32
+            point_to_face = point_face_distance(points.float(), points_first_idx, tris.float(), tris_first_idx, max_tris).double().reshape((-1, self.batch_size))
+
             # Target is a point cloud, reference a mesh.
-            distances = distance_to_closest_point(self.points, self.target_points, self.batch_size)
-            posterior = unnormalised_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            posterior = unnormalised_log_posterior(point_to_face, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+
         self.posterior = posterior
 
     def decide(self):

@@ -49,9 +49,9 @@ class ICPAnalyser:
             _, transformed_points, _ = trimesh.registration.icp(mesh.points, self.reference.points,
                                                                 max_iterations=self.iterations)
             mesh.set_points(transformed_points)
-            # distances = distance_to_closest_point(mesh.tensor_points.unsqueeze(2), self.reference.tensor_points, 1) \
+            # differences = distance_to_closest_point(mesh.tensor_points.unsqueeze(2), self.reference.tensor_points, 1) \
             #    .squeeze(-1)
-            # mesh.set_points(self.reference.tensor_points + distances)
+            # mesh.set_points(self.reference.tensor_points + differences)
             distances = np.linalg.norm(transformed_points[:, np.newaxis, :] - reference_points[np.newaxis, :, :],
                                        axis=2)
             distances = np.power(distances, 2)

@@ -2,6 +2,7 @@ import dash
 import numpy as np
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
+from flask import request
 
 
 class BatchMeshVisualizer:
@@ -233,6 +234,13 @@ class ChainVisualizer:
         return layout
 
 
+def shutdown_app():
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        raise RuntimeError('Not running with the Werkzeug Server')
+    func()
+
+
 class MainVisualizer:
     def __init__(self, mesh, model, sampler):
         self.app = dash.Dash(__name__, suppress_callback_exceptions=True)
@@ -271,4 +279,10 @@ class MainVisualizer:
             return html.Div()
 
     def run(self):
-        self.app.run_server(debug=True)
+        self.app.run_server(debug=False)
+
+    def shutdown(self):
+        @self.app.server.route('/shutdown', methods=['POST'])
+        def shut():
+            shutdown_app()
+            return 'Dash-Server shutting down...'
