@@ -4,7 +4,7 @@ import torch
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, sigma=0.3, chain_length_step=1000):
+    def __init__(self, batch_size, starting_parameters, sigma=0.1, chain_length_step=1000):
         """
         The class is used to draw new values for the theta parameters.
         A whole batch of new suggestions is always generated.

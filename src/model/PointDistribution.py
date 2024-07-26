@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import torch
 
-from pytorch3d.loss.point_mesh_distance import point_face_distance
+from pytorch3d.loss.point_mesh_distance import point_face_distance, face_point_distance
 
 
 def extract_points(meshes):
@@ -172,7 +172,7 @@ class PointDistributionModel:
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=3.0, sigma_prior=1.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -194,6 +194,8 @@ class PDMMetropolisSampler:
 
     def update_mesh(self):
         reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
+        if self.batch_size == 1:
+            reconstructed_points = reconstructed_points[:, :, np.newaxis]
         self.batch_mesh.set_points(reconstructed_points, save_old=True)
         self.points = self.batch_mesh.tensor_points
 
@@ -216,17 +218,19 @@ class PDMMetropolisSampler:
             faces_packed = reference_meshes.faces_packed()
             tris = verts_packed[faces_packed]  # (T, 3, 3)
             tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
-            max_tris = reference_meshes.num_faces_per_mesh().max().item()
+            # max_tris = reference_meshes.num_faces_per_mesh().max().item()
 
             points = target_clouds.points_packed()  # (P, 3)
             points_first_idx = target_clouds.cloud_to_packed_first_idx()
+            max_points = target_clouds.num_points_per_cloud().max().item()
 
             # point to face squared distance: shape (P,)
             # requires dtype=torch.float32
-            point_to_face = point_face_distance(points.float(), points_first_idx, tris.float(), tris_first_idx, max_tris).double().reshape((-1, self.batch_size))
+            point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(), tris_first_idx, max_points).double().reshape((-1, int(self.model.num_points)))
+            point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
             # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(point_to_face, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters, self.sigma_lm, self.sigma_prior)
 
         self.posterior = posterior
 

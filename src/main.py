@@ -35,13 +35,13 @@ def run(mesh_path,
         reference = custom_io.read_meshes(reference_path)[0]
         model = model_reader.get_model()
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(3.0 * np.ones(model.sample_size)))
+        target.set_points(model.get_points_from_parameters(3.0*np.ones(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
-        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=10)
+        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=1)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
-        for i in range(10001):
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+        for i in range(20001):
             sampler.propose()
             sampler.determine_quality()
             sampler.decide()
@@ -88,12 +88,12 @@ def run(mesh_path,
         reference = meshes[0]
 
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(3.0 * np.ones(model.sample_size)))
+        target.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=10)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
         for i in range(10001):
             sampler.propose()
             sampler.determine_quality()
