@@ -1,16 +1,20 @@
-import math
 import warnings
 
 import numpy as np
 import torch
 
-from pytorch3d.loss.point_mesh_distance import point_face_distance, face_point_distance
-from torch.distributions import Uniform
-
-from src.sampling.proposals.GaussRandWalk import ParameterProposalType
+from scipy.interpolate import RBFInterpolator
 
 
 def extract_points(meshes):
+    """
+    Creates a large data matrix with all mesh points from a list of meshio.Mesh objects.
+
+    :param meshes: List with the meshes. It is assumed that these meshes are in correspondence.
+    :type meshes: list of meshio.Mesh
+    :return: Data matrix with shape (3 * num_points, num_meshes).
+    :rtype: np.ndarray
+    """
     for index, mesh in enumerate(meshes):
         if index == 0:
             stacked_points = mesh.points.ravel()
@@ -20,14 +24,39 @@ def extract_points(meshes):
 
 
 def apply_svd(centered_points, num_components):
+    """
+    Applies SVD (singular value decomposition) to a centred data matrix and returns the first ‘num_components’
+    eigenvector / eigenvalue pairs to create a point distribution model (PDM). For more information on the relationship
+    between PCA and SVD see:
+    https://stats.stackexchange.com/questions/134282/relationship-between-svd-and-pca-how-to-use-svd-to-perform-pca
+
+    :param centered_points: Centred data matrix with shape (num_points, num_samples).
+    :type centered_points: np.ndarray
+    :param num_components: Indicates how many eigenvector / eigenvalue are considered (rank of the model).
+    :type num_components: int
+    :return: Tuple with two elements:
+        - np.ndarray: The first ‘num_components’ eigenvalues in descending order with shape (num_components,).
+        - np.ndarray: The corresponding first ‘num_components’ eigenvectors with shape (num_points, num_components).
+    """
     _, s, V_T = np.linalg.svd(np.transpose(centered_points), full_matrices=False)
     # The rows of V_T are the eigenvector of the covariance matrix. The singular values are related to the eigenvalues
-    # of the covariance matrix via $\lambda_i = s_i^2/(n-1)$. For further information see
-    # https://stats.stackexchange.com/questions/134282/relationship-between-svd-and-pca-how-to-use-svd-to-perform-pca
+    # of the covariance matrix via $\lambda_i = s_i^2/(n-1)$.
     return np.square(s) / (num_components - 1), np.transpose(V_T)
 
 
 def get_parameters(stacked_points, components):
+    """
+    Determines the model parameters in the model space that correspond to the given mesh points. This involves solving
+    a least squares problem.
+
+    :param stacked_points: Batch with given mesh points with shape (3 * num_points, batch_size).
+    :type stacked_points: np.ndarray
+    :param components: Eigenvectors of the model multiplied by the square root of the respective eigenvalue with shape
+    (3 * num_points, model_rank).
+    :type components: np.ndarray
+    :return: Calculated model parameters with shape (model_rank, batch_size).
+    :rtype: np.ndarray
+    """
     parameters, residuals, rank, s = np.linalg.lstsq(components, stacked_points, rcond=None)
     return parameters
 
@@ -79,18 +108,6 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
     return torch.sum(torch.cat((log_likelihoods, log_prior), dim=0), dim=0)
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_prior):
-    distances_squared = torch.pow(distances, 2)
-    log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
-    log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_prior, 2), dim=0)
-    uniform_translation_prior = Uniform(-100, 100)
-    rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
-    log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
-    uniform_rotation_prior = Uniform(-math.pi, math.pi)
-    log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
-    return log_likelihoods + log_prior + log_translation + log_rotation
-
-
 class PointDistributionModel:
     def __init__(self, meshes=None, read_in=False, model=None):
         if not read_in:
@@ -101,7 +118,7 @@ class PointDistributionModel:
             # Avoid explicit representation of the covariance matrix
             # self.covariance = np.cov(self.stacked_points)
             # Dimensionality of 3 hardcoded here!
-            self.num_points = self.stacked_points.shape[0] / 3
+            self.num_points = int(self.stacked_points.shape[0] / 3)
             self.sample_size = self.stacked_points.shape[1]
             # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
             self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.sample_size)
@@ -116,7 +133,7 @@ class PointDistributionModel:
             # did not work. Why?
             self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
             self.points_centered = None
-            self.num_points = self.mean.shape[0] / 3
+            self.num_points = int(self.mean.shape[0] / 3)
             self.sample_size = model.get('basis').shape[1]
             self.eigenvalues = model.get('var')
             self.eigenvectors = model.get('basis')
@@ -164,108 +181,41 @@ class PointDistributionModel:
             return reference_decimated
 
         reference_decimated = self.meshes[0].simplify_qem(decimation_target)
-        closest_points = index_of_closest_point(reference_decimated.tensor_points.unsqueeze(2),
-                                                torch.tensor(self.mean.reshape(-1, 3)), batch_size=1)
-        closest_points_flat = closest_points.flatten() * 3
-        indices = np.vstack((closest_points_flat, closest_points_flat + 1, closest_points_flat + 2)).T.flatten()
+        mean_fun, cov_fun = self.pdm_to_low_rank_gp(decimation_target)
+        mean, cov = mean_fun(reference_decimated.points), cov_fun(reference_decimated.points,
+                                                                       reference_decimated.points)
+        self.mean = mean.reshape((-1, 1))
+        eigenvalues, eigenvectors = apply_svd(cov, self.sample_size)
+        self.eigenvalues = np.sqrt(eigenvalues[:self.sample_size] * (self.sample_size - 1))
+        self.eigenvectors = eigenvectors[:, :self.sample_size]
         self.meshes = None
         self.stacked_points = None
         self.points_centered = None
         self.num_points = reference_decimated.num_points
-        self.mean = self.mean[indices]
-        self.eigenvectors = self.eigenvectors[indices, :]
-        self.components = self.components[indices, :]
+        self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
         self.parameters = None
         self.decimated = True
 
         return reference_decimated
 
+    def pdm_to_low_rank_gp(self, decimation_target):
+        mean_reshaped = self.mean.reshape((-1, 3))
+        eigenvectors_reshaped = self.eigenvectors.reshape((self.num_points, 3, self.sample_size))
+        eigenvector_interpolators = [RBFInterpolator(mean_reshaped, eigenvectors_reshaped[:, :, i]) for i in
+                                     range(self.sample_size)]
+        def mean(x):
+            return RBFInterpolator(mean_reshaped, mean_reshaped)(x)
 
-class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
-        self.model = pdm
-        self.proposal = proposal
-        self.batch_mesh = batch_mesh
-        self.points = self.batch_mesh.tensor_points
-        self.target = target
-        self.target_points = target.tensor_points
-        self.correspondences = correspondences
-        self.batch_size = self.proposal.batch_size
-        self.sigma_lm = sigma_lm
-        self.sigma_prior = sigma_prior
-        self.old_posterior = None
-        self.posterior = None
-        self.determine_quality(ParameterProposalType.MODEL)
-        self.accepted = 0
-        self.rejected = 0
+        def cov(x, y):
+            x_eigen = np.dstack([interp(x) for interp in eigenvector_interpolators]).reshape((3 * decimation_target, self.sample_size))
+            y_eigen = np.dstack([interp(y) for interp in eigenvector_interpolators]).reshape((3 * decimation_target, self.sample_size))
 
-    def propose(self, parameter_proposal_type: ParameterProposalType):
-        self.proposal.propose(parameter_proposal_type)
+            return (x_eigen * self.eigenvalues) @ np.transpose(y_eigen)
 
-    def update_mesh(self, parameter_proposal_type: ParameterProposalType):
-        if parameter_proposal_type == ParameterProposalType.MODEL:
-            reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
-            if self.batch_size == 1:
-                reconstructed_points = reconstructed_points[:, :, np.newaxis]
-            self.batch_mesh.set_points(reconstructed_points, save_old=True)
-        elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy(), save_old=True)
-        else:
-            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters().numpy(), save_old=True)
-        self.points = self.batch_mesh.tensor_points
+        return mean, cov
 
-    def determine_quality(self, parameter_proposal_type: ParameterProposalType):
-        self.update_mesh(parameter_proposal_type)
-        self.old_posterior = self.posterior
-        if self.correspondences:
-            target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size)
-            differences = torch.sub(self.points, target_points_expanded)
-            # old draft
-            # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
-            distances = torch.linalg.vector_norm(differences, dim=1)
-            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm, self.sigma_prior)
 
-        else:
-            reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
-            target_clouds = self.target.to_pytorch3d_pointclouds(self.batch_size)
-            # packed representation for faces
-            verts_packed = reference_meshes.verts_packed()
-            faces_packed = reference_meshes.faces_packed()
-            tris = verts_packed[faces_packed]  # (T, 3, 3)
-            tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
-            # max_tris = reference_meshes.num_faces_per_mesh().max().item()
 
-            points = target_clouds.points_packed()  # (P, 3)
-            points_first_idx = target_clouds.cloud_to_packed_first_idx()
-            max_points = target_clouds.num_points_per_cloud().max().item()
 
-            # point to face squared distance: shape (P,)
-            # requires dtype=torch.float32
-            point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
-                                                           tris_first_idx, max_points).double().reshape(
-                (-1, int(self.model.num_points)))
-            point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
-            # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm,
-                                                   self.sigma_prior)
 
-        self.posterior = posterior
-
-    def decide(self):
-        # log-ratio!
-        ratio = torch.exp(self.posterior - self.old_posterior)
-        probabilities = torch.min(ratio, torch.ones_like(ratio))
-        randoms = torch.rand(self.batch_size)
-        decider = torch.gt(probabilities, randoms)
-        # decider = torch.ones(self.batch_size).bool()
-
-        self.proposal.update(decider)
-        self.batch_mesh.update_points(decider)
-        self.points = self.batch_mesh.tensor_points
-
-        self.accepted += decider.sum().item()
-        self.rejected += (self.batch_size - decider.sum().item())
-
-    def acceptance_ratio(self):
-        return float(self.accepted) / (self.accepted + self.rejected)
