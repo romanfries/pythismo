@@ -12,20 +12,30 @@ class ParameterProposalType(Enum):
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, sigma_mod=0.1, sigma_trans=1.0, sigma_rot=0.05, chain_length_step=1000):
+    def __init__(self, batch_size, starting_parameters, sigma_mod=0.1, sigma_trans=1.0, sigma_rot=0.05,
+                 chain_length_step=1000):
         """
-        The class is used to draw new values for the theta parameters.
-        A whole batch of new suggestions is always generated.
+        The class is used to draw new values for the parameters. The class supports three types of parameter: Model
+        parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
+        for an entire batch of proposals.
         All parameters are drawn independently of a Gaussian distribution with mean value at the previous parameter
-        value and standardised variance sigma_mod.
+        value and a standardised variance. The variance is defined separately for all 3 types of parameters.
 
         :param batch_size: Number of proposals to be generated simultaneously.
         :type batch_size: int
-        :param starting_parameters: Start values of the parameters. When new parameters are drawn for the first time,
-        these parameters are used for each proposal.
+        :param starting_parameters: Start values of the model parameters. When new parameters are drawn for the first
+        time, these initial values are used as the mean value of the Gaussian distribution (for all the elements of the
+        batch). The shape of the array is assumed to be (num_model_parameters,).
         :type starting_parameters: np.ndarray
-        :param sigma_mod: Variance of the Gaussian distribution used.
+        :param sigma_mod: Variance of the model parameters.
         :type sigma_mod: float
+        :param sigma_trans: Variance of the translation parameters.
+        :type sigma_trans: float
+        :param sigma_rot: Variance of the rotation parameters.
+        :type sigma_rot: float
+        :param chain_length_step: Step size with which the Markov chain is extended. If chain_length_step many
+        samples were drawn, the chain must be extended again accordingly.
+        :type chain_length_step: int
         """
         self.batch_size = batch_size
         self.parameters = torch.tensor(np.tile(starting_parameters[:, np.newaxis], (1, self.batch_size)))
@@ -47,8 +57,9 @@ class GaussianRandomWalkProposal:
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
         Updates the parameter values using a Gaussian random walk (see class description).
-        :return: None
-        :rtype: None
+
+        :param parameter_proposal_type: Specifies which parameters are to be drawn.
+        :type parameter_proposal_type: ParameterProposalType
         """
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size))
@@ -70,24 +81,51 @@ class GaussianRandomWalkProposal:
 
     def get_parameters(self):
         """
-        Returns the current batch of parameter values.
+        Returns the entire batch of current model parameter values.
 
-        :return: A 3D tensor with shape (num_parameters, batch_size)
+        :return: A tensor with shape (num_parameters, batch_size)
         :rtype: torch.Tensor
         """
         return self.parameters
 
     def get_translation_parameters(self):
+        """
+        Returns the entire batch of current translation parameter values.
+
+        :return: A tensor with shape (3, batch_size)
+        :rtype: torch.Tensor
+        """
         return self.translation
 
     def get_rotation_parameters(self):
+        """
+        Returns the entire batch of current rotation parameter values.
+
+        :return: A tensor with shape (3, batch_size)
+        :rtype: torch.Tensor
+        """
         return self.rotation
 
     def update(self, decider):
+        """
+        Method to be called when it is clear whether the new parameter values are to be accepted or the old ones are to
+        be restored. Regardless of the decision, the current parameter values are saved in the Markov chain.
+
+        :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
+        the new parameter values were accepted (=True) or rejected (=False).
+        :type decider: torch.Tensor
+        """
         self.update_parameters(decider)
         self.update_chain()
 
     def update_parameters(self, decider):
+        """
+        Internal method that updates the parameters according to the information from the passed decider.
+
+        :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
+        the new parameter values were accepted (=True) or rejected (=False).
+        :type decider: torch.Tensor
+        """
         self.parameters = torch.where(decider.unsqueeze(0), self.parameters,
                                       self.old_parameters)
         self.translation = torch.where(decider.unsqueeze(0), self.translation, self.old_translation)
@@ -97,6 +135,9 @@ class GaussianRandomWalkProposal:
         self.old_rotation = None
 
     def update_chain(self):
+        """
+        Internal method that appends the current parameters to the Markov chain.
+        """
         if self.chain_length % self.chain_length_step == 0:
             self.extend_chain()
 
@@ -104,6 +145,11 @@ class GaussianRandomWalkProposal:
         self.chain_length += 1
 
     def extend_chain(self):
-        updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length + self.chain_length_step))
+        """
+        Internal method that is called when the tensor self.chain is filled The existing Markov chain data is
+        copied to a new, larger tensor, which provides space for additional self.chain_length_step chain elements.
+        """
+        updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length +
+                                     self.chain_length_step))
         updated_chain[:, :, :self.chain_length] = self.chain
         self.chain = updated_chain
