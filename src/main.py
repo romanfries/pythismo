@@ -14,7 +14,7 @@ from registration.Procrustes import ProcrustesAnalyser
 from src.custom_io.H5ModelIO import ModelReader
 from src.mesh.TMesh import BatchTorchMesh
 from src.registration.IterativeClosestPoints import ICPAnalyser
-from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal
+from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 from visualization.DashViewer import MainVisualizer
 
 
@@ -37,13 +37,21 @@ def run(mesh_path,
         target = reference.copy()
         target.set_points(model.get_points_from_parameters(3.0*np.ones(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
-        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=1)
+        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
         sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
-        for i in range(20001):
-            sampler.propose()
-            sampler.determine_quality()
+        generator = np.random.default_rng()
+        for i in range(10001):
+            random = generator.random()
+            if random < 0.6:
+                proposal = ParameterProposalType.MODEL
+            elif 0.6 <= random < 0.8:
+                proposal = ParameterProposalType.TRANSLATION
+            else:
+                proposal = ParameterProposalType.ROTATION
+            sampler.propose(proposal)
+            sampler.determine_quality(proposal)
             sampler.decide()
 
         return batched_reference, model, sampler
@@ -90,13 +98,21 @@ def run(mesh_path,
         target = reference.copy()
         target.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
-        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=10)
+        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
         sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
+        generator = np.random.default_rng()
         for i in range(10001):
-            sampler.propose()
-            sampler.determine_quality()
+            random = generator.random()
+            if random < 0.6:
+                proposal = ParameterProposalType.MODEL
+            elif 0.6 <= random < 0.8:
+                proposal = ParameterProposalType.TRANSLATION
+            else:
+                proposal = ParameterProposalType.ROTATION
+            sampler.propose(proposal)
+            sampler.determine_quality(proposal)
             sampler.decide()
 
         return batched_reference, model, sampler

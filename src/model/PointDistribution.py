@@ -1,9 +1,13 @@
+import math
 import warnings
 
 import numpy as np
 import torch
 
 from pytorch3d.loss.point_mesh_distance import point_face_distance, face_point_distance
+from torch.distributions import Uniform
+
+from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 
 
 def extract_points(meshes):
@@ -67,19 +71,24 @@ def index_of_closest_point(ref_points, target_points, batch_size):
 
 
 def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
-    likelihoods = batch_multivariate_gaussian_pdf(3, differences, torch.zeros(3, dtype=torch.float64), torch.diag(sigma_lm * torch.ones(3, dtype=torch.float64)))
+    likelihoods = batch_multivariate_gaussian_pdf(3, differences, torch.zeros(3, dtype=torch.float64),
+                                                  torch.diag(sigma_lm * torch.ones(3, dtype=torch.float64)))
     log_likelihoods = torch.log(likelihoods)
     prior = gaussian_pdf(parameters, sigma=sigma_prior)
     log_prior = torch.log(prior)
     return torch.sum(torch.cat((log_likelihoods, log_prior), dim=0), dim=0)
 
 
-def unnormalised_log_posterior(distances, parameters, sigma_lm, sigma_prior):
+def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_prior):
     distances_squared = torch.pow(distances, 2)
     log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_prior, 2), dim=0)
-    return log_likelihoods + log_prior
-
+    uniform_translation_prior = Uniform(-100, 100)
+    rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
+    log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
+    uniform_rotation_prior = Uniform(-math.pi, math.pi)
+    log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
+    return log_likelihoods + log_prior + log_translation + log_rotation
 
 
 class PointDistributionModel:
@@ -155,7 +164,8 @@ class PointDistributionModel:
             return reference_decimated
 
         reference_decimated = self.meshes[0].simplify_qem(decimation_target)
-        closest_points = index_of_closest_point(reference_decimated.tensor_points.unsqueeze(2), torch.tensor(self.mean.reshape(-1, 3)), batch_size=1)
+        closest_points = index_of_closest_point(reference_decimated.tensor_points.unsqueeze(2),
+                                                torch.tensor(self.mean.reshape(-1, 3)), batch_size=1)
         closest_points_flat = closest_points.flatten() * 3
         indices = np.vstack((closest_points_flat, closest_points_flat + 1, closest_points_flat + 2)).T.flatten()
         self.meshes = None
@@ -185,22 +195,27 @@ class PDMMetropolisSampler:
         self.sigma_prior = sigma_prior
         self.old_posterior = None
         self.posterior = None
-        self.determine_quality()
+        self.determine_quality(ParameterProposalType.MODEL)
         self.accepted = 0
         self.rejected = 0
 
-    def propose(self):
-        self.proposal.propose()
+    def propose(self, parameter_proposal_type: ParameterProposalType):
+        self.proposal.propose(parameter_proposal_type)
 
-    def update_mesh(self):
-        reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
-        if self.batch_size == 1:
-            reconstructed_points = reconstructed_points[:, :, np.newaxis]
-        self.batch_mesh.set_points(reconstructed_points, save_old=True)
+    def update_mesh(self, parameter_proposal_type: ParameterProposalType):
+        if parameter_proposal_type == ParameterProposalType.MODEL:
+            reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
+            if self.batch_size == 1:
+                reconstructed_points = reconstructed_points[:, :, np.newaxis]
+            self.batch_mesh.set_points(reconstructed_points, save_old=True)
+        elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy(), save_old=True)
+        else:
+            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters().numpy(), save_old=True)
         self.points = self.batch_mesh.tensor_points
 
-    def determine_quality(self):
-        self.update_mesh()
+    def determine_quality(self, parameter_proposal_type: ParameterProposalType):
+        self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
         if self.correspondences:
             target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size)
@@ -208,7 +223,7 @@ class PDMMetropolisSampler:
             # old draft
             # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
-            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm, self.sigma_prior)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -226,11 +241,14 @@ class PDMMetropolisSampler:
 
             # point to face squared distance: shape (P,)
             # requires dtype=torch.float32
-            point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(), tris_first_idx, max_points).double().reshape((-1, int(self.model.num_points)))
+            point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
+                                                           tris_first_idx, max_points).double().reshape(
+                (-1, int(self.model.num_points)))
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
             # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters, self.sigma_lm, self.sigma_prior)
+            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm,
+                                                   self.sigma_prior)
 
         self.posterior = posterior
 

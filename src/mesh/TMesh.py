@@ -7,6 +7,39 @@ from quad_mesh_simplify import simplify_mesh
 import warnings
 
 
+def get_transformation_matrix(angles):
+    """
+    https://gist.github.com/jamesgregson/67eb5509af0d8b372f25146d5e3c5149
+    :param angles:
+    :return:
+    """
+    if angles.ndim == 1:
+        angles = angles[:, np.newaxis]
+    cx, cy, cz = np.cos(angles)
+    sx, sy, sz = np.sin(angles)
+    transformation_matrices = np.zeros((4, 4, angles.shape[1]))
+
+    transformation_matrices[0, 0, :] = cy * cz
+    transformation_matrices[0, 1, :] = -cx * sz + cz * sx * sy
+    transformation_matrices[0, 2, :] = cx * cz * sy + sx * sz
+    transformation_matrices[1, 0, :] = cy * sz
+    transformation_matrices[0, 3, :] = 0
+
+    transformation_matrices[1, 1, :] = cx * cz + sx * sy * sz
+    transformation_matrices[1, 2, :] = cx * sy * sz - cz * sx
+    transformation_matrices[2, 0, :] = -sy
+    transformation_matrices[1, 3, :] = 0
+
+    transformation_matrices[2, 1, :] = cy * sx
+    transformation_matrices[2, 2, :] = cx * cy
+    transformation_matrices[2, 3, :] = 0
+    transformation_matrices[3, 3, :] = 1
+
+    if angles.shape[1] == 1:
+        transformation_matrices = np.squeeze(transformation_matrices)
+
+    return transformation_matrices
+
 class TorchMeshIOService:
     def __init__(self, reader=meshio.read, writer=meshio.write):
         self.reader = reader
@@ -92,7 +125,7 @@ class TorchMesh(Mesh):
         self.tensor_points = torch.tensor(transformed_points)
         self.points = transformed_points
 
-    def apply_transformation(self, transform):
+    def apply_transformation(self, transform, save_old=False):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
 
@@ -106,6 +139,20 @@ class TorchMesh(Mesh):
         transformed_points = extended_points @ transform.T
         transformed_points = transformed_points[:, :3]
         self.set_points(transformed_points)
+
+    def apply_translation(self, translation_parameters):
+        """
+
+        :param translation_parameters:
+        :type translation_parameters: torch.Tensor
+        :return:
+        """
+        translated_points = self.points + translation_parameters
+        self.set_points(translated_points)
+
+    def apply_rotation(self, rotation_parameters, save_old=False):
+        transformation = get_transformation_matrix(rotation_parameters)
+        self.apply_transformation(transformation, save_old)
 
     def center_of_mass(self):
         """
@@ -171,7 +218,7 @@ class BatchTorchMesh(TorchMesh):
         self.tensor_points = torch.tensor(transformed_points)
         self.points = transformed_points
 
-    def apply_transformation(self, transform):
+    def apply_transformation(self, transform, save_old=False):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
 
@@ -183,11 +230,21 @@ class BatchTorchMesh(TorchMesh):
         # points_to_transform = self.points[:, :, 0]
         additional_cols = np.ones((self.points.shape[0], 1, self.points.shape[2]))
         extended_points = np.concatenate((self.points, additional_cols), axis=1)
-        transformed_points = np.empty_like(extended_points)
-        for z in range(extended_points.shape[2]):
-            transformed_points[:, :, z] = extended_points[:, :, z] @ transform.T
+        transformed_points = np.einsum('ijk,ljk->lik', transform, extended_points)
         transformed_points = transformed_points[:, :3, :]
-        self.set_points(transformed_points)
+        if save_old:
+            self.old_points = self.tensor_points
+        else:
+            self.old_points = None
+        self.set_points(transformed_points, save_old)
+
+    def apply_translation(self, translation_parameters, save_old=False):
+        translated_points = self.points + translation_parameters
+        if save_old:
+            self.old_points = self.tensor_points
+        else:
+            self.old_points = None
+        self.set_points(translated_points, save_old)
 
     def update_points(self, decider):
         self.tensor_points = torch.where(decider.unsqueeze(0).unsqueeze(1), self.tensor_points,

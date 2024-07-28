@@ -1,8 +1,14 @@
+import math
+
 import dash
+import meshio
 import numpy as np
+import torch
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 from flask import request
+
+from src.mesh.TMesh import get_transformation_matrix, TorchMesh
 
 
 class BatchMeshVisualizer:
@@ -76,14 +82,16 @@ class ModelVisualizer:
         self.app = app
         self.model = model
         self.target = target
-        self.num_parameters = self.model.sample_size
+        self.num_parameters = self.model.sample_size + 6
         self.parameters = np.zeros(self.num_parameters)
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [1.2*np.min(self.model.mean), 1.2*np.max(self.model.mean)]
+        display_range = [1.2 * np.min(self.model.mean), 1.2 * np.max(self.model.mean)]
         sliders = []
-        for i in range(self.num_parameters):
+        translation_sliders = []
+        rotation_sliders = []
+        for i in range(self.num_parameters - 6):
             sliders.append(html.Label(f'Parameter {i + 1}', style={'font-size': '10px'}))
             sliders.append(
                 dcc.Slider(
@@ -97,17 +105,52 @@ class ModelVisualizer:
                     updatemode='drag',
                 )
             )
+        for i in range(3):
+            translation_sliders.append(html.Label(f'Translation {i + 1}', style={'font-size': '10px'}))
+            translation_sliders.append(
+                dcc.Slider(
+                    id=f'translation-{i}',
+                    min=-100,
+                    max=100,
+                    step=0.2,
+                    value=0,
+                    marks={-100: '-100', 0: '0', 100: '100'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                    updatemode='drag',
+                )
+            )
+            rotation_sliders.append(html.Label(f'Rotation {i + 1}', style={'font-size': '10px'}))
+            rotation_sliders.append(
+                dcc.Slider(
+                    id=f'rotation-{i}',
+                    min=-math.pi,
+                    max=math.pi,
+                    step=0.005,
+                    value=0,
+                    marks={-math.pi: '-3.14', 0: '0', math.pi: '3.14'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                    updatemode='drag',
+                )
+            )
 
         layout = html.Div([
             html.H1("3D Model Analyser", style={'text-align': 'center'}),
             html.Div([
                 dcc.Graph(id='mesh-plot', style={'width': '100%', 'height': '80vh', 'display': 'inline-block'}),
                 html.Div(sliders,
+                         style={'width': '20%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
+                html.Div(translation_sliders,
+                         style={'width': '20%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
+                html.Div(rotation_sliders,
                          style={'width': '20%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'})
             ])
         ])
 
-        inputs = [Input(f'param-{i}', 'value') for i in range(self.num_parameters)]
+        inputs = [Input(f'param-{i}', 'value') for i in range(self.num_parameters - 6)]
+        translation_inputs = [Input(f'translation-{i}', 'value') for i in range(3)]
+        rotation_inputs = [Input(f'rotation-{i}', 'value') for i in range(3)]
+        inputs.extend(translation_inputs)
+        inputs.extend(rotation_inputs)
 
         @callback(
             Output('mesh-plot', 'figure'),
@@ -115,8 +158,17 @@ class ModelVisualizer:
         )
         def update_mesh(*parameters):
             params = np.asarray(parameters)
-            x, y, z = np.transpose(self.model.get_points_from_parameters(params))
-            i, j, k = self.target.cells[0].data.T
+            translation = params[-6:-3]
+            rotation = params[-3:]
+            points = self.model.get_points_from_parameters(params[:-6])
+            new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
+                                                                                         self.target.cells[0].data.astype(
+                                                                                             np.int64))])
+            new_torch_mesh = TorchMesh(new_mesh, 'display')
+            new_torch_mesh.apply_translation(translation)
+            new_torch_mesh.apply_rotation(rotation)
+            x, y, z = np.transpose(new_torch_mesh.points)
+            i, j, k = new_torch_mesh.cells[0].data.T
             mesh_figure = go.Figure(data=[
                 go.Mesh3d(
                     x=x,
@@ -148,12 +200,12 @@ class ChainVisualizer:
     def __init__(self, app, sampler):
         self.app = app
         self.sampler = sampler
-        self.num_parameters = self.sampler.model.sample_size
+        self.num_parameters = self.sampler.model.sample_size + 6
         self.parameters = self.sampler.proposal.chain
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [1.2*np.min(self.sampler.model.mean), 1.2*np.max(self.sampler.model.mean)]
+        display_range = [1.2 * np.min(self.sampler.model.mean), 1.2 * np.max(self.sampler.model.mean)]
         layout = html.Div([
             html.H1("3D Markov Chain Viewer", style={'text-align': 'center'}),
             html.Div([
@@ -192,8 +244,17 @@ class ChainVisualizer:
         )
         def update_display(batch, chain_element):
             params = np.asarray(self.parameters[:, batch, chain_element])
-            x, y, z = np.transpose(self.sampler.model.get_points_from_parameters(params))
-            i, j, k = self.sampler.target.cells[0].data.T
+            translation = params[-6:-3]
+            rotation = params[-3:]
+            points = self.sampler.model.get_points_from_parameters(params[:-6])
+            new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
+                                                                                self.sampler.target.cells[0].data.astype(
+                                                                                    np.int64))])
+            new_torch_mesh = TorchMesh(new_mesh, 'display')
+            new_torch_mesh.apply_translation(translation)
+            new_torch_mesh.apply_rotation(rotation)
+            x, y, z = np.transpose(new_torch_mesh.points)
+            i, j, k = new_torch_mesh.cells[0].data.T
 
             x_ref, y_ref, z_ref = np.transpose(self.sampler.target_points)
 
