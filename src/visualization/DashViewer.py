@@ -341,9 +341,3 @@ class MainVisualizer:
 
     def run(self):
         self.app.run_server(debug=False)
-
-    def shutdown(self):
-        @self.app.server.route('/shutdown', methods=['POST'])
-        def shut():
-            shutdown_app()
-            return 'Dash-Server shutting down...'
