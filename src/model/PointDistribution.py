@@ -62,12 +62,42 @@ def get_parameters(stacked_points, components):
 
 
 def gaussian_pdf(x, mean=0.0, sigma=1.0):
+    """
+    Calculates the likelihood of points in 1-dimensional space assuming a Gaussian distribution, defined by
+    the input parameters ‘mean’ and ‘covariance’. Supports batched input points.
+
+    :param x: Tensor of points whose likelihoods are to be calculated with shape (num_points, batch_size).
+    :type x: torch.Tensor
+    :param mean: Mean value of the normal distribution.
+    :type mean: float
+    :param sigma: Variance of the normal distribution.
+    :type sigma: float
+    :return: Tensor with likelihoods of the input points assuming the given parameters with the same shape as 'x', i.e.,
+    (num_points, batch_size).
+    :rtype: torch.Tensor
+    """
     normalization = 1.0 / (sigma * torch.sqrt(torch.tensor(2.0 * torch.pi)))
     exponent = torch.exp(-0.5 * ((x - mean) / sigma) ** 2)
     return normalization * exponent
 
 
 def batch_multivariate_gaussian_pdf(k, points, mean, covariance):
+    """
+    Calculates the likelihood of points in k-dimensional space assuming a multivariate Gaussian distribution, defined by
+    the input parameters ‘mean’ and ‘covariance’. Supports batched input points.
+
+    :param k: Dimensionality of the space.
+    :type k: int
+    :param points: Tensor of points whose likelihoods are to be calculated with shape (num_points, k, batch_size).
+    :type points: torch.Tensor
+    :param mean: Tensor with mean value in each dimension with shape (k,).
+    :type mean: torch.Tensor
+    :param covariance: Covariance matrix tensor with shape (k, k).
+    :type covariance: torch.Tensor
+    :return: Tensor with likelihoods of the input points assuming the given parameters with shape
+    (num_points, batch_size).
+    :rtype: torch.Tensor
+    """
     # This function is tailored to tensors of shape (num_points, dimensionality, batch_size) to calculate the likelihood
     # for every point of a batch mesh.
     mean = mean.unsqueeze(0).unsqueeze(2)

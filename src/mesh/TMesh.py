@@ -40,6 +40,7 @@ def get_transformation_matrix(angles):
 
     return transformation_matrices
 
+
 class TorchMeshIOService:
     def __init__(self, reader=meshio.read, writer=meshio.write):
         self.reader = reader
@@ -90,8 +91,8 @@ class TorchMesh(Mesh):
 
     def simplify_qem(self, target=1000):
         """
-        Reduces the mesh to the specified number of points and returns a new instance with these new points. The
-        identifier remains unchanged.
+        Reduces the mesh to the specified number of points and returns a new instance with these new points/triangles.
+        The identifier remains unchanged.
         The algorithm used comes from the paper by M. Garland and P. Heckbert: "Surface Simplification Using Quadric
         Error Metrics" (1997) implemented by J. Magnusson. For more information, please visit
         https://github.com/jannessm/quadric-mesh-simplification
@@ -116,10 +117,8 @@ class TorchMesh(Mesh):
         remain unchanged.
 
         :param transformed_points: The new coordinates of the points. The shape of the
-         np.ndarray has to be (num_points, 3)
+        np.ndarray has to be (num_points, 3)
         :type transformed_points: np.ndarray
-        :return: None
-        :rtype: None
         """
         # transformed_points: numpy_array
         self.tensor_points = torch.tensor(transformed_points)
@@ -131,8 +130,10 @@ class TorchMesh(Mesh):
 
         :param transform: Transformation matrix with shape (4, 4).
         :type transform: np.ndarray
-        :return: None
-        :rtype: None
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
+        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
+        saving the old coordinates.
+        :type save_old: bool
         """
         additional_col = np.ones((self.points.shape[0], 1))
         extended_points = np.hstack((self.points, additional_col))
@@ -142,15 +143,25 @@ class TorchMesh(Mesh):
 
     def apply_translation(self, translation_parameters):
         """
+        Changes the points of the mesh by adding a (3,) translation vector.
 
-        :param translation_parameters:
-        :type translation_parameters: torch.Tensor
-        :return:
+        :param translation_parameters: Array with shape (3,) containing the translation parameters.
+        :type translation_parameters: np.ndarray
         """
         translated_points = self.points + translation_parameters
         self.set_points(translated_points)
 
     def apply_rotation(self, rotation_parameters, save_old=False):
+        """
+        Rotates the mesh instance using given Euler angles (ZYX convention).
+
+        :param rotation_parameters: Array with shape (3,) containing the Euler angles (in radians).
+        :type rotation_parameters: np.ndarray
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
+        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
+        saving the old coordinates.
+        :type save_old: bool
+        """
         transformation = get_transformation_matrix(rotation_parameters)
         self.apply_transformation(transformation, save_old)
 
@@ -164,12 +175,42 @@ class TorchMesh(Mesh):
         return np.sum(self.points, axis=0) / self.num_points
 
     def to_pytorch3d_pointclouds(self, batch_size=1):
+        """
+        Helper method to translate a given TorchMesh into a pytorch3d.structures.Pointclouds object.
+        The Pointclouds class provides functions for working with batches of 3d point clouds, and converting between
+        representations.
+        The generated Pointclouds object represents ‘batch_size’ times the same point cloud, namely the one consisting
+        of the points of the calling TorchMesh instance.
+        :param batch_size: Specifies how often the point cloud of the TorchMesh is repeated in the Pointclouds object.
+        :type batch_size: int
+        :return: Above described Pointclouds object.
+        :rtype: pytorch3d.structures.Pointclouds
+        """
         points = self.tensor_points.unsqueeze(0).repeat(batch_size, 1, 1)
         return pytorch3d.structures.Pointclouds(points)
 
 
 class BatchTorchMesh(TorchMesh):
     def __init__(self, mesh, identifier, batch_size=50, batched_data=False, batched_points=None):
+        """
+        Further extension of the TorchMesh class. Saves 'batch_size' many mesh instances simultaneously.
+        However, these meshes differ only in the point coordinates and all have the same triangulation.
+        There are two types of instantiation. Either only a TorchMesh is given, whose point coordinates are then
+        replicated accordingly, or a batch of point coordinates.
+
+        :param mesh: TorchMesh instance, which serves as the basis. The triangle data is transferred from it.
+        :type mesh: TorchMesh
+        :param identifier: Identification string.
+        :type identifier: str
+        :param batch_size: Self-explanatory.
+        :type batch_size: int
+        :param batched_data: Boolean variable that specifies whether the BatchTorchMesh is initialized with a batch of
+        point coordinates.
+        :type batched_data: bool
+        :param batched_points: 3-dimensional array with shape (num_points, dimensionality, batch_size) with the batched
+        point coordinates.
+        :type batched_points: np.ndarray
+        """
         # possibly prone to errors
         super().__init__(mesh, identifier)
         if not batched_data:
@@ -184,6 +225,12 @@ class BatchTorchMesh(TorchMesh):
 
     @classmethod
     def from_mesh(cls, mesh, identifier, batch_size=100):
+        """
+        Redundant method.
+        :param mesh:
+        :param identifier:
+        :return:
+        """
         return cls(mesh, identifier, batch_size=batch_size)
 
     def simplify_qem(self, target=1000):
@@ -191,10 +238,8 @@ class BatchTorchMesh(TorchMesh):
         This method should not be used for BatchTorchMesh instances.
 
         :param target:
-        :return:
         """
         warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
-        return
 
     def set_points(self, transformed_points, save_old=False):
         """
@@ -203,12 +248,10 @@ class BatchTorchMesh(TorchMesh):
         remain unchanged.
 
         :param transformed_points: The new coordinates of the points. The shape of the
-         np.ndarray has to be (num_points, 3, batch_size)
+        np.ndarray has to be (num_points, 3, batch_size)
         :type transformed_points: np.ndarray
-        :param save_old:
-        :type save_old:
-        :return: None
-        :rtype: None
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
+        :type save_old: bool
         """
         # transformed_points: numpy_array
         if save_old:
@@ -221,11 +264,14 @@ class BatchTorchMesh(TorchMesh):
     def apply_transformation(self, transform, save_old=False):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
+        A separate transformation matrix must be provided for each element of the batch.
+        Bear this in mind if the same transformation is to be applied to all elements of the batch by extending the
+        'transform' array accordingly, e.g., by using np.newaxis.
 
-        :param transform: Transformation matrix with shape (4, 4).
+        :param transform: Transformation matrix with shape (4, 4, batch_size).
         :type transform: np.ndarray
-        :return: None
-        :rtype: None
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
+        :type save_old: bool
         """
         # points_to_transform = self.points[:, :, 0]
         additional_cols = np.ones((self.points.shape[0], 1, self.points.shape[2]))
@@ -239,6 +285,17 @@ class BatchTorchMesh(TorchMesh):
         self.set_points(transformed_points, save_old)
 
     def apply_translation(self, translation_parameters, save_old=False):
+        """
+        Changes the points of the mesh by adding a (3,) translation vector.
+        A separate translation vector must be provided for each element of the batch.
+        Bear this in mind if the same translation is to be applied to all elements of the batch by extending the
+        'translation_parameters' array accordingly, e.g., by using np.newaxis.
+
+        :param translation_parameters: Array with shape (3, batch_size) containing the translation parameters.
+        :type translation_parameters: np.ndarray
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
+        :type save_old: bool
+        """
         translated_points = self.points + translation_parameters
         if save_old:
             self.old_points = self.tensor_points
@@ -247,12 +304,29 @@ class BatchTorchMesh(TorchMesh):
         self.set_points(translated_points, save_old)
 
     def update_points(self, decider):
+        """
+        Internal method that updates the point values according to the information from the passed decider.
+
+        :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
+        the new point values were accepted (=True) or rejected (=False).
+        :type decider: torch.Tensor
+        """
         self.tensor_points = torch.where(decider.unsqueeze(0).unsqueeze(1), self.tensor_points,
                                          self.old_points)
         self.points = self.tensor_points.numpy()
         self.old_points = None
 
     def to_pytorch3d_meshes(self):
+        """
+        Helper method to translate a given BatchTorchMesh into a pytorch3d.structures.Meshes object.
+        The Meshes class provides functions for working with batches of triangulated meshes with varying numbers of
+        faces and vertices, and converting between representations.
+        However, the generated Meshes object here is more restricted, because the meshes in the BatchTorchMesh instance
+        all have the same number of points and the exact same triangulation.
+
+        :return: Above described Meshes object.
+        :rtype: pytorch3d.structures.Meshes
+        """
         verts = torch.permute(self.tensor_points, (2, 0, 1))
         tensor_cells = torch.tensor(self.cells_dict['triangle'])
         faces = tensor_cells.unsqueeze(0).repeat(self.batch_size, 1, 1)

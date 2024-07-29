@@ -1,16 +1,26 @@
 import numpy as np
 import torch
 import trimesh.registration
-from meshio import Mesh
-from scipy.optimize import linear_sum_assignment
-
-from src.mesh.TMesh import TorchMesh
 
 
-def extract_reference(meshes):
+def extract_reference(meshes, identifier):
+    """
+    NOTE: Method is currently not used.
+    Method for extracting a mesh with a specific identifier 'identifier' from a list of meshes.
+    This mesh is removed from the list.
+
+    :param meshes: List of mesh instances to be searched.
+    :type meshes: list of TorchMesh
+    :param identifier: Identifier string to be searched for.
+    :type identifier: str
+    :return: Tuple with two elements:
+        - list of TorchMesh: Original list of meshes without the mesh extracted.
+        - TorchMesh: Extracted mesh instance.
+    """
     new_meshes = []
+    reference = None
     for mesh in meshes:
-        if mesh.id == 'reference':
+        if mesh.id == identifier:
             reference = mesh
         else:
             new_meshes.append(mesh)
@@ -18,8 +28,25 @@ def extract_reference(meshes):
     return new_meshes, reference
 
 
-def distance_to_closest_point(ref_points, target_points, batch_size):
+def difference_to_closest_point(ref_points, target_points, batch_size):
     # TODO: Adapt for two-dimensional input tensors (batch size equal to 1)
+    """
+    NOTE: Method is currently not used.
+    Calculates the negative difference between each point of a target and the point of a reference closest to this
+    target point. An entire batch of references is analysed this way.
+
+    :param ref_points: Coordinates of the points of the references as a 3-dimensional tensor with shape
+    (num_points_ref, dimensionality, batch_size).
+    :type ref_points: torch.Tensor
+    :param target_points: Coordinates of the points of the target as a 2-dimensional tensor with shape:
+    (num_points_target, dimensionality).
+    :type target_points: torch.Tensor
+    :param batch_size: Specifies how many references are analysed simultaneously.
+    :type batch_size: int
+    :return: Tensor containing negative differences between each point of a target and the point of a reference closest
+    to this target point with shape (num_points_target, dimensionality, batch_size).
+    :rtype: torch.Tensor
+    """
     num_target_points = target_points.shape[0]
     target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(
         0)
@@ -34,6 +61,18 @@ def distance_to_closest_point(ref_points, target_points, batch_size):
 
 class ICPAnalyser:
     def __init__(self, meshes, iterations=100):
+        """
+        Class to rigidly align a set of meshes using the Iterative Closest Points (ICP) algorithm.
+        All meshes are aligned to the first entry in the mesh list 'meshes' that is selected as a reference.
+        It is assumed that an initial transformation has already been applied to ensure that the meshes are
+        approximately aligned. If this is not the case, the result may be poor because the algorithm has become trapped
+        in a local minimum.
+
+        :param meshes: List of mesh instances to be aligned.
+        :type meshes: list of TorchMesh
+        :param iterations: Number of iterations per alignment
+        :type iterations: int
+        """
         self.meshes = meshes[1:]
         self.reference = meshes[0]
         # self.meshes, self.reference = extract_reference(meshes)
@@ -42,6 +81,10 @@ class ICPAnalyser:
         self.iterations = iterations
 
     def icp(self):
+        """
+        Method that must be called in order to actually execute the alignment step. After the call, ‘meshes’ contains
+        the transformed meshes.
+        """
         reference_points = np.asanyarray(self.reference.points, dtype=np.float64)
         if not trimesh.util.is_shape(reference_points, (-1, 3)):
             raise ValueError("Invalid point shape.")
@@ -49,14 +92,3 @@ class ICPAnalyser:
             _, transformed_points, _ = trimesh.registration.icp(mesh.points, self.reference.points,
                                                                 max_iterations=self.iterations)
             mesh.set_points(transformed_points)
-            # differences = distance_to_closest_point(mesh.tensor_points.unsqueeze(2), self.reference.tensor_points, 1) \
-            #    .squeeze(-1)
-            # mesh.set_points(self.reference.tensor_points + differences)
-            distances = np.linalg.norm(transformed_points[:, np.newaxis, :] - reference_points[np.newaxis, :, :],
-                                       axis=2)
-            distances = np.power(distances, 2)
-            row, col = linear_sum_assignment(distances)
-            reordered_points = np.empty_like(mesh.points)
-            reordered_points[col] = transformed_points[row]
-            mesh.cells[0].data = col[mesh.cells[0].data]
-            mesh.set_points(reordered_points)

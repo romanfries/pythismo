@@ -36,7 +36,7 @@ def run(mesh_path,
         reference = custom_io.read_meshes(reference_path)[0]
         model = model_reader.get_model()
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(3.0*np.ones(model.sample_size)))
+        target.set_points(model.get_points_from_parameters(3.0 * np.ones(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
@@ -100,7 +100,7 @@ def run(mesh_path,
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
         for i in range(1001):
             random = generator.random()
@@ -129,15 +129,15 @@ class Main:
 if __name__ == "__main__":
     main = Main()
     batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
-        landmark_path="datasets/femur-data/project-data/landmarks",
-        reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
-        reference_path="datasets/femur-data/project-data/reference-decimated",
-        model_path="datasets/models",
-        read_model=False,
-        simplify_model=True,
-        registered=True,
-        write_meshes=False
-        )
+                                            landmark_path="datasets/femur-data/project-data/landmarks",
+                                            reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
+                                            reference_path="datasets/femur-data/project-data/reference-decimated",
+                                            model_path="datasets/models",
+                                            read_model=True,
+                                            simplify_model=True,
+                                            registered=True,
+                                            write_meshes=False
+                                            )
     visualizer = MainVisualizer(batched_reference, model, sampler)
     # print(converter.acceptance_ratio())
     dash_thread = threading.Thread(target=dash(visualizer))
