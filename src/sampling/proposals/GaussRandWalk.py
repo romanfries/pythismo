@@ -12,7 +12,7 @@ class ParameterProposalType(Enum):
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, sigma_mod=0.1, sigma_trans=1.0, sigma_rot=0.05,
+    def __init__(self, batch_size, starting_parameters, sigma_mod=0.05, sigma_trans=1.0, sigma_rot=0.05,
                  chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -53,6 +53,7 @@ class GaussianRandomWalkProposal:
         self.chain_length = 0
         self.chain_length_step = chain_length_step
         self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0))
+        self.posterior = torch.zeros((self.batch_size, 0))
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -106,21 +107,25 @@ class GaussianRandomWalkProposal:
         """
         return self.rotation
 
-    def update(self, decider):
+    def update(self, decider, posterior):
         """
         Method to be called when it is clear whether the new parameter values are to be accepted or the old ones are to
-        be restored. Regardless of the decision, the current parameter values are saved in the Markov chain.
+        be restored. Regardless of the decision, the current parameter values and log-density values of the posterior
+        are saved in the Markov chain.
 
         :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
         the new parameter values were accepted (=True) or rejected (=False).
         :type decider: torch.Tensor
+        :param posterior: Tensor with shape (batch_size,) containing the new log-density values of the posterior
+        :type posterior: torch.Tensor
         """
         self.update_parameters(decider)
-        self.update_chain()
+        self.update_chain(posterior)
 
     def update_parameters(self, decider):
         """
-        Internal method that updates the parameters according to the information from the passed decider.
+        Internal method that updates the parameters and the log-density values of the posterior according to the
+        information from the passed decider.
 
         :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
         the new parameter values were accepted (=True) or rejected (=False).
@@ -134,22 +139,28 @@ class GaussianRandomWalkProposal:
         self.old_translation = None
         self.old_rotation = None
 
-    def update_chain(self):
+    def update_chain(self, posterior):
         """
-        Internal method that appends the current parameters to the Markov chain.
+        Internal method that appends the current parameters and log-density values of the posterior to the Markov chain.
         """
         if self.chain_length % self.chain_length_step == 0:
             self.extend_chain()
 
         self.chain[:, :, self.chain_length] = torch.cat((self.parameters, self.translation, self.rotation), dim=0)
+        self.posterior[:, self.chain_length] = posterior
         self.chain_length += 1
 
     def extend_chain(self):
         """
-        Internal method that is called when the tensor self.chain is filled The existing Markov chain data is
-        copied to a new, larger tensor, which provides space for additional self.chain_length_step chain elements.
+        Internal method that is called when the tensors  self.chain/self.posterior are filled.
+        The existing Markov chain data is copied to new, larger tensors, which provide space for additional
+        self.chain_length_step chain elements.
         """
         updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length +
                                      self.chain_length_step))
         updated_chain[:, :, :self.chain_length] = self.chain
+        updated_posterior = torch.zeros((self.batch_size, self.chain_length +
+                                         self.chain_length_step))
+        updated_posterior[:, :self.chain_length] = self.posterior
         self.chain = updated_chain
+        self.posterior = updated_posterior

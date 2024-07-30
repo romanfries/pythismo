@@ -9,9 +9,14 @@ import warnings
 
 def get_transformation_matrix(angles):
     """
+    Generates suitable transformation matrices for given Euler angles (ZYX convention).
+    The code is inspired by J. Gregson, but extended so that it can handle batches of input angles:
     https://gist.github.com/jamesgregson/67eb5509af0d8b372f25146d5e3c5149
-    :param angles:
-    :return:
+
+    :param angles: Numpy array with (optional: a batch of) Euler coordinates in radians (shape (3,) or (3, batch_size)).
+    :type angles: np.ndarray
+    :return: Numpy array with (a batch of) transformation matrix/matrices (shape (4, 4) or (4, 4, batch_size)).
+    :rtype: np.ndarray
     """
     if angles.ndim == 1:
         angles = angles[:, np.newaxis]

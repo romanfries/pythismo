@@ -21,7 +21,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=3.0, sigma_prior=1.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -62,7 +62,8 @@ class PDMMetropolisSampler:
             # old draft
             # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
-            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm, self.sigma_prior)
+            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
+                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -86,7 +87,8 @@ class PDMMetropolisSampler:
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
             # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters, self.proposal.translation, self.proposal.rotation, self.sigma_lm,
+            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
+                                                   self.proposal.translation, self.proposal.rotation, self.sigma_lm,
                                                    self.sigma_prior)
 
         self.posterior = posterior
@@ -98,8 +100,8 @@ class PDMMetropolisSampler:
         randoms = torch.rand(self.batch_size)
         decider = torch.gt(probabilities, randoms)
         # decider = torch.ones(self.batch_size).bool()
-
-        self.proposal.update(decider)
+        self.posterior = torch.where(decider, self.posterior, self.old_posterior)
+        self.proposal.update(decider, self.posterior)
         self.batch_mesh.update_points(decider)
         self.points = self.batch_mesh.tensor_points
 

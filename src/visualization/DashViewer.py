@@ -162,8 +162,8 @@ class ModelVisualizer:
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                         self.target.cells[0].data.astype(
-                                                                                             np.int64))])
+                                                                                self.target.cells[0].data.astype(
+                                                                                    np.int64))])
             new_torch_mesh = TorchMesh(new_mesh, 'display')
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
@@ -248,7 +248,8 @@ class ChainVisualizer:
             rotation = params[-3:]
             points = self.sampler.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                self.sampler.target.cells[0].data.astype(
+                                                                                self.sampler.target.cells[
+                                                                                    0].data.astype(
                                                                                     np.int64))])
             new_torch_mesh = TorchMesh(new_mesh, 'display')
             new_torch_mesh.apply_translation(translation)
@@ -295,11 +296,44 @@ class ChainVisualizer:
         return layout
 
 
-def shutdown_app():
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func is None:
-        raise RuntimeError('Not running with the Werkzeug Server')
-    func()
+class PosteriorVisualizer:
+    def __init__(self, app, proposal):
+        self.app = app
+        self.proposal = proposal
+        self.posterior = proposal.posterior
+        self.batch_size = proposal.batch_size
+        self.layout = self.setup_layout_and_callbacks()
+
+    def setup_layout_and_callbacks(self):
+        layout = html.Div([
+            dcc.Graph(id='density-plot'),
+            dcc.Slider(
+                id='slider',
+                min=0,
+                max=self.batch_size - 1,
+                step=1,
+                value=0,
+                marks={i: str(i) for i in range(self.batch_size)}
+            )
+        ])
+
+        @callback(
+            Output('density-plot', 'figure'),
+            Input('slider', 'value')
+        )
+        def update_figure(value):
+            x, y = np.arange(0, self.proposal.chain_length, 1), self.posterior[value, :self.proposal.chain_length]
+            figure = {
+                'data': [go.Scatter(x=x, y=y, mode='lines+markers', marker=dict(size=5))],
+                'layout': go.Layout(
+                    title=f'Trace Plot for Batch {value}',
+                    xaxis={'title': 'Iteration'},
+                    yaxis={'title': 'Log Density Values'}
+                )
+            }
+            return figure
+
+        return layout
 
 
 class MainVisualizer:
@@ -308,6 +342,7 @@ class MainVisualizer:
         self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
         self.model_visualizer = ModelVisualizer(self.app, model, sampler.target)
         self.chain_visualizer = ChainVisualizer(self.app, sampler)
+        self.posterior_visualizer = PosteriorVisualizer(self.app, sampler.proposal)
         self.setup_layout()
         self.setup_callbacks()
 
@@ -318,7 +353,8 @@ class MainVisualizer:
                 options=[
                     {'label': 'Batch Mesh', 'value': 'scene1'},
                     {'label': 'Model', 'value': 'scene2'},
-                    {'label': 'Markov Chain', 'value': 'scene3'}
+                    {'label': 'Markov Chain', 'value': 'scene3'},
+                    {'label': 'Log-Density Posterior', 'value': 'scene4'}
                 ],
                 value='scene1'
             ),
@@ -337,6 +373,8 @@ class MainVisualizer:
                 return self.model_visualizer.layout
             elif scene == 'scene3':
                 return self.chain_visualizer.layout
+            elif scene == 'scene4':
+                return self.posterior_visualizer.layout
             return html.Div()
 
     def run(self):

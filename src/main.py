@@ -26,14 +26,14 @@ def run(mesh_path,
         model = model_reader.get_model()
         # TODO: Think again: Does it make sense to represent the target as a TorchMesh?
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(3.0 * np.ones(model.sample_size)))
+        target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.sample_size)))
         reference.set_points(model.get_points_from_parameters(np.zeros(model.sample_size)))
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
         generator = np.random.default_rng()
-        for i in range(10001):
+        for i in range(100001):
             random = generator.random()
             if random < 0.6:
                 proposal = ParameterProposalType.MODEL
@@ -93,7 +93,7 @@ def run(mesh_path,
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=True)
         generator = np.random.default_rng()
         for i in range(10001):
             random = generator.random()
@@ -130,7 +130,7 @@ if __name__ == "__main__":
     batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=False,
+                                            read_model=True,
                                             simplify_model=True
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)
