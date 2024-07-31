@@ -21,7 +21,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=3.0, sigma_prior=1.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -83,7 +83,7 @@ class PDMMetropolisSampler:
             # requires dtype=torch.float32
             point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
                                                            tris_first_idx, max_points).double().reshape(
-                (-1, int(self.model.num_points)))
+                (-1, int(self.target.num_points)))
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
             # Target is a point cloud, reference a mesh.

@@ -78,10 +78,10 @@ class BatchMeshVisualizer:
 
 
 class ModelVisualizer:
-    def __init__(self, app, model, target):
+    def __init__(self, app, model, batched_ref):
         self.app = app
         self.model = model
-        self.target = target
+        self.batched_ref = batched_ref
         self.num_parameters = self.model.sample_size + 6
         self.parameters = np.zeros(self.num_parameters)
         self.layout = self.setup_layout_and_callbacks()
@@ -162,7 +162,7 @@ class ModelVisualizer:
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                self.target.cells[0].data.astype(
+                                                                                self.batched_ref.cells[0].data.astype(
                                                                                     np.int64))])
             new_torch_mesh = TorchMesh(new_mesh, 'display')
             new_torch_mesh.apply_translation(translation)
@@ -248,7 +248,7 @@ class ChainVisualizer:
             rotation = params[-3:]
             points = self.sampler.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                self.sampler.target.cells[
+                                                                                self.sampler.batch_mesh.cells[
                                                                                     0].data.astype(
                                                                                     np.int64))])
             new_torch_mesh = TorchMesh(new_mesh, 'display')
@@ -258,6 +258,7 @@ class ChainVisualizer:
             i, j, k = new_torch_mesh.cells[0].data.T
 
             x_ref, y_ref, z_ref = np.transpose(self.sampler.target_points)
+            i_ref, j_ref, k_ref = self.sampler.target.cells[0].data.T
 
             mesh_figure = go.Mesh3d(
                 x=x,
@@ -274,9 +275,9 @@ class ChainVisualizer:
                 x=x_ref,
                 y=y_ref,
                 z=z_ref,
-                i=i,
-                j=j,
-                k=k,
+                i=i_ref,
+                j=j_ref,
+                k=k_ref,
                 color='darkmagenta',
                 opacity=0.30
             )
@@ -340,7 +341,7 @@ class MainVisualizer:
     def __init__(self, mesh, model, sampler):
         self.app = dash.Dash(__name__, suppress_callback_exceptions=True)
         self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
-        self.model_visualizer = ModelVisualizer(self.app, model, sampler.target)
+        self.model_visualizer = ModelVisualizer(self.app, model, mesh)
         self.chain_visualizer = ChainVisualizer(self.app, sampler)
         self.posterior_visualizer = PosteriorVisualizer(self.app, sampler.proposal)
         self.setup_layout()
