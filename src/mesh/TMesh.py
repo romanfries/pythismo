@@ -194,6 +194,13 @@ class TorchMesh(Mesh):
         points = self.tensor_points.unsqueeze(0).repeat(batch_size, 1, 1)
         return pytorch3d.structures.Pointclouds(points)
 
+    def calc_facet_normals(self):
+        triangles = torch.tensor(self.cells[0].data)
+        v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
+        edges_a, edges_b = v1 - v0, v2 - v0
+        facet_normals = torch.cross(edges_a, edges_b)
+        self.cell_data.update({"facet_normals": facet_normals})
+
 
 class BatchTorchMesh(TorchMesh):
     def __init__(self, mesh, identifier, batch_size=50, batched_data=False, batched_points=None):

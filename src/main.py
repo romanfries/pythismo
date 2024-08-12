@@ -11,6 +11,7 @@ from model.PointDistribution import PointDistributionModel
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
 from src.mesh.TMesh import BatchTorchMesh, TorchMesh
+from src.sampling.proposals.ClosestPoint import ClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 from visualization.DashViewer import MainVisualizer
 
@@ -146,6 +147,9 @@ def run(mesh_path,
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
+        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.sample_size), reference,
+                                             target, model)
+        random_walk_2.calculate_posterior_model()
         sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
         for i in range(10001):
@@ -209,9 +213,12 @@ def run(mesh_path,
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
+        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.sample_size), reference,
+                                             target, model)
+        random_walk_2.calculate_posterior_model()
         sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        for i in range(20001):
+        for i in range(40001):
             random = generator.random()
             if random < 0.6:
                 proposal = ParameterProposalType.MODEL
@@ -246,7 +253,7 @@ if __name__ == "__main__":
     batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=False,
+                                            read_model=True,
                                             simplify_model=True
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)

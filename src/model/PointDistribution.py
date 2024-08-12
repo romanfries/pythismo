@@ -140,6 +140,7 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
 
 class PointDistributionModel:
     def __init__(self, meshes=None, read_in=False, model=None):
+        self.read_in = read_in
         if not read_in:
             self.meshes = meshes
             self.stacked_points = extract_points(self.meshes)
@@ -169,6 +170,7 @@ class PointDistributionModel:
             self.eigenvectors = model.get('basis')
             self.components = self.eigenvectors * model.get('std')
             self.parameters = None
+
 
     def get_eigenvalues(self):
         return self.eigenvalues
@@ -211,7 +213,7 @@ class PointDistributionModel:
             return reference_decimated
 
         reference_decimated = self.meshes[0].simplify_qem(decimation_target)
-        mean_fun, cov_fun = self.pdm_to_low_rank_gp(decimation_target)
+        mean_fun, cov_fun = self.pdm_to_interpolated_gp(decimation_target)
         mean, cov = mean_fun(reference_decimated.points), cov_fun(reference_decimated.points,
                                                                        reference_decimated.points)
         self.mean = mean.reshape((-1, 1))
@@ -228,7 +230,7 @@ class PointDistributionModel:
 
         return reference_decimated
 
-    def pdm_to_low_rank_gp(self, decimation_target):
+    def pdm_to_interpolated_gp(self, decimation_target):
         mean_reshaped = self.mean.reshape((-1, 3))
         eigenvectors_reshaped = self.eigenvectors.reshape((self.num_points, 3, self.sample_size))
         eigenvector_interpolators = [RBFInterpolator(mean_reshaped, eigenvectors_reshaped[:, :, i]) for i in
@@ -244,6 +246,11 @@ class PointDistributionModel:
 
         return mean, cov
 
+    def get_covariance(self):
+        if not self.read_in:
+            return np.cov(self.stacked_points)
+        else:
+            return self.eigenvectors @ (np.diag(self.eigenvalues) @ np.transpose(self.eigenvectors))
 
 
 
