@@ -41,7 +41,7 @@ def apply_svd(centered_points, num_components):
     _, s, V_T = np.linalg.svd(np.transpose(centered_points), full_matrices=False)
     # The rows of V_T are the eigenvector of the covariance matrix. The singular values are related to the eigenvalues
     # of the covariance matrix via $\lambda_i = s_i^2/(n-1)$.
-    return np.square(s) / (num_components - 1), np.transpose(V_T)
+    return (np.square(s) / (num_components - 1))[:num_components], np.transpose(V_T)[:, :num_components]
 
 
 def get_parameters(stacked_points, components):
@@ -139,9 +139,36 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
 
 
 class PointDistributionModel:
-    def __init__(self, meshes=None, read_in=False, model=None):
+    def __init__(self, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None, sample_size=None):
         self.read_in = read_in
-        if not read_in:
+        self.mean_and_cov = mean_and_cov
+        if self.read_in:
+            self.meshes = None
+            self.stacked_points = None
+            # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
+            # did not work. Why?
+            self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
+            self.points_centered = None
+            self.num_points = int(self.mean.shape[0] / 3)
+            self.sample_size = model.get('basis').shape[1]
+            self.eigenvalues = model.get('var')
+            self.eigenvectors = model.get('basis')
+            self.components = self.eigenvectors * model.get('std')
+            self.parameters = None
+            self.decimated = False
+        elif self.mean_and_cov:
+            self.meshes = None
+            self.stacked_points = None
+            self.mean = mean
+            self.points_centered = None
+            self.num_points = int(self.mean.shape[0] / 3)
+            self.sample_size = sample_size
+            eigenvalues, self.eigenvectors = apply_svd(cov, self.sample_size)
+            self.eigenvalues = np.sqrt((self.sample_size - 1) * eigenvalues)
+            self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
+            self.parameters = None
+            self.decimated = False
+        else:
             self.meshes = meshes
             self.stacked_points = extract_points(self.meshes)
             self.mean = np.mean(self.stacked_points, axis=1)[:, np.newaxis]
@@ -157,20 +184,6 @@ class PointDistributionModel:
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
             self.parameters = get_parameters(self.points_centered, self.components)
             self.decimated = False
-        else:
-            self.meshes = None
-            self.stacked_points = None
-            # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
-            # did not work. Why?
-            self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
-            self.points_centered = None
-            self.num_points = int(self.mean.shape[0] / 3)
-            self.sample_size = model.get('basis').shape[1]
-            self.eigenvalues = model.get('var')
-            self.eigenvectors = model.get('basis')
-            self.components = self.eigenvectors * model.get('std')
-            self.parameters = None
-
 
     def get_eigenvalues(self):
         return self.eigenvalues
@@ -197,7 +210,7 @@ class PointDistributionModel:
     def decimate(self, decimation_target=200):
 
         reference_decimated = self.meshes[0]
-        if self.meshes is None:
+        if self.read_in or self.mean_and_cov:
             warnings.warn("Warning: Decimation of imported Point Distribution Models is not (yet) supported.",
                           UserWarning)
             return reference_decimated

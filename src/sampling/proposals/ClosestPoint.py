@@ -6,6 +6,7 @@ from pytorch3d.loss.point_mesh_distance import point_face_distance
 from trimesh import Trimesh
 
 from src.mesh.TMesh import BatchTorchMesh
+from src.model.PointDistribution import PointDistributionModel
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType, GaussianRandomWalkProposal
 
 
@@ -69,11 +70,25 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         covariances = directions @ sigma @ directions.transpose(1, 2)
 
         # 4: Compute the analytic posterior \mathcal{M}_{\alpha} (eq. 10) with L and {\Sigma_{s_{i}}}.
-        mean = torch.tensor(self.prior_model.mean)
-        cov = torch.tensor(self.prior_model.get_covariance())
+        mean = torch.tensor(self.prior_model.mean, dtype=torch.float64)
+        cov = torch.tensor(self.prior_model.get_covariance(), dtype=torch.float64)
 
         sampled_indexes_3d = torch.cat([sampled_indexes * 3 + i for i in range(3)], dim=0)
         sampled_covariances = covariances[sampled_indexes, :, :]
-        K_xx = cov[sampled_indexes_3d][:, sampled_indexes_3d]
-        # K_xx[torch.arange(0, 3 * m, 3).repeat_interleave(3), torch.arange(0, 3 * m, 3).repeat_interleave(3).unsqueeze(1)] += sampled_covariances.view(-1, 3)
+        K_yy = cov[sampled_indexes_3d][:, sampled_indexes_3d]
+        covariances_reshaped = torch.zeros((3 * m, 3 * m), dtype=torch.float64)
+        covariances_reshaped[torch.arange(3 * m).repeat_interleave(3), torch.arange(3 * m).view(-1, 3).repeat_interleave(3, dim=0).flatten()] = sampled_covariances.flatten()
+        K_yy_inv = torch.inverse(K_yy + covariances_reshaped)
+        K_xy = cov[:, sampled_indexes_3d]
+        posterior_mean = mean + K_xy @ K_yy_inv @ (landmark_set[:,:,1].transpose(0, 1).flatten().unsqueeze(1) - mean[sampled_indexes_3d])
+        posterior_cov = cov - K_xy @ K_yy_inv @ K_xy.transpose(0, 1)
+
+        self.posterior_model = PointDistributionModel(mean_and_cov=True, mean=posterior_mean.numpy(), cov=posterior_cov.numpy(), sample_size=self.prior_model.sample_size)
+
+        return self.posterior_model
+
+
+
+
+
 

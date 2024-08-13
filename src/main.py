@@ -149,7 +149,7 @@ def run(mesh_path,
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
         random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.sample_size), reference,
                                              target, model)
-        random_walk_2.calculate_posterior_model()
+        model = random_walk_2.calculate_posterior_model()
         sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
         for i in range(10001):
@@ -198,7 +198,7 @@ def run(mesh_path,
         #         mesh_io = MeshReaderWriter(write_path / file_name)
         #         mesh_io.write_mesh(mesh)
 
-        model = PointDistributionModel(meshes)
+        model = PointDistributionModel(meshes=meshes)
 
         if simplify_model:
             reference = model.decimate(200)
