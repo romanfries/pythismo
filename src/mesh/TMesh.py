@@ -195,6 +195,9 @@ class TorchMesh(Mesh):
         return pytorch3d.structures.Pointclouds(points)
 
     def calc_facet_normals(self):
+        """
+        (Re-)Calculates the normalised normal vectors to the triangular surfaces of the mesh.
+        """
         triangles = torch.tensor(self.cells[0].data)
         v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
         edges_a, edges_b = v1 - v0, v2 - v0
@@ -344,3 +347,10 @@ class BatchTorchMesh(TorchMesh):
         tensor_cells = torch.tensor(self.cells_dict['triangle'])
         faces = tensor_cells.unsqueeze(0).repeat(self.batch_size, 1, 1)
         return pytorch3d.structures.Meshes(verts, faces)
+
+    def calc_facet_normals(self):
+        """
+        This method should not be used for BatchTorchMesh instances. The normal vectors are different for all elements
+        of the batch.
+        """
+        warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)

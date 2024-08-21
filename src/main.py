@@ -148,13 +148,13 @@ def run(mesh_path,
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.sample_size))
         random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.sample_size), reference,
-                                             target, model)
-        model = random_walk_2.calculate_posterior_model()
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+                                             batched_reference, target, model)
+        sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
+        model = random_walk_2.calculate_posterior_model(batched_reference)
         for i in range(10001):
             random = generator.random()
-            if random < 0.6:
+            if random < 1.0:
                 proposal = ParameterProposalType.MODEL
             elif 0.6 <= random < 0.8:
                 proposal = ParameterProposalType.TRANSLATION
@@ -220,7 +220,7 @@ def run(mesh_path,
         generator = np.random.default_rng()
         for i in range(40001):
             random = generator.random()
-            if random < 0.6:
+            if random < 1.0:
                 proposal = ParameterProposalType.MODEL
             elif 0.6 <= random < 0.8:
                 proposal = ParameterProposalType.TRANSLATION
@@ -254,7 +254,7 @@ if __name__ == "__main__":
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
                                             read_model=True,
-                                            simplify_model=True
+                                            simplify_model=False
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)
     print(sampler.acceptance_ratio())

@@ -46,7 +46,11 @@ class PDMMetropolisSampler:
             reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
             if self.batch_size == 1:
                 reconstructed_points = reconstructed_points[:, :, np.newaxis]
-            self.batch_mesh.set_points(reconstructed_points, save_old=True)
+            old_points = self.batch_mesh.points
+            self.batch_mesh.set_points(reconstructed_points)
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy())
+            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters().numpy())
+            self.batch_mesh.old_points = torch.tensor(old_points)
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy(), save_old=True)
         else:
