@@ -2,130 +2,16 @@ from pathlib import Path
 
 import os
 
-import meshio
 import numpy as np
-from meshio import Mesh
 
 import custom_io
 from model.PointDistribution import PointDistributionModel
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
-from src.mesh.TMesh import BatchTorchMesh, TorchMesh
+from src.mesh.TMesh import BatchTorchMesh
 from src.sampling.proposals.ClosestPoint import ClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 from visualization.DashViewer import MainVisualizer
-
-
-# TODO: These methods should be moved to src.mesh.TMesh.
-def create_artificial_partial_target(full_target):
-    """
-    Creates a partial target, whereby all points above a defined plane are removed from a given mesh instance.
-    The points defining the plane were determined by hand and are based on empirical values for the specific femur case.
-
-    :param full_target: Original complete mesh instance.
-    :type full_target: TorchMesh
-    :return: Artificial partial target.
-    :rtype: TorchMesh
-    """
-    p1, p2, p3 = np.array([0.0, 1.0, 100.0]), np.array([1.0, 0.0, 100.0]), np.array([0.0, 0.0, 100.0])
-    normal, d = define_plane_from_points(p1, p2, p3)
-    filtered_points, removed_indices = remove_points_above_plane(full_target.points, normal, d)
-    filtered_cells = remove_triangles_with_removed_points(full_target.cells[0].data, removed_indices)
-    filtered_cells = update_triangle_indices(full_target.cells[0].data, filtered_cells, removed_indices)
-    cell_block = meshio.CellBlock('triangle', filtered_cells)
-    return TorchMesh(Mesh(filtered_points, [cell_block]), 'target')
-
-
-def define_plane_from_points(p1, p2, p3):
-    """
-    Defines a plane consisting of three points.
-
-    :param p1: First point on the plane (np.ndarray of shape (3,)).
-    :type p1: np.ndarray
-    :param p2: Second point on the plane (np.ndarray of shape (3,)).
-    :type p2: np.ndarray
-    :param p3: Third point on the plane (np.ndarray of shape (3,)).
-    :type p3: np.ndarray
-    :return: Tuple with two elements:
-        - np.ndarray: Normal vector of the plane with shape (3,).
-        - float: Constant d in the plane equation.
-    """
-    v1 = p2 - p1
-    v2 = p3 - p1
-
-    normal = np.cross(v1, v2)
-    d = -np.dot(normal, p1)
-
-    return normal, d
-
-
-def remove_points_above_plane(points, normal, d):
-    """
-    Removes all points from the array that lie above the defined level.
-
-    :param points: Numpy array of points with shape (num_points, 3).
-    :type points: np.ndarray
-    :param normal: Normal vector of the plane with shape (3,).
-    :type normal: np.ndarray
-    :param d: Constant d in the plane equation.
-    :type d: float
-    :return: Tuple with two elements:
-        - np.ndarray: Filtered array of points that are not above the plane with shape (num_filtered_points, 3)
-        - np.ndarray: Indices of the removed points (in the 'points' array) with shape (num_removed_points,).
-    """
-    distances = np.dot(points, normal) + d
-    mask = distances <= 0
-
-    filtered_points = points[mask]
-    removed_indices = np.where(~mask)[0]
-
-    return filtered_points, removed_indices
-
-
-def remove_triangles_with_removed_points(triangles, removed_indices):
-    """
-    Removes all triangles that contain at least one removed point.
-
-    :param triangles: Numpy array of triangles with shape (num_triangles, 3).
-    :type triangles: np.ndarray
-    :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: np.ndarray
-    :return: Filtered array of triangles that do not contain any removed points with shape (num_filtered_triangles, 3).
-    :rtype: np.ndarray
-    """
-    removed_indices_set = set(removed_indices)
-    mask = np.array([not any(vertex in removed_indices_set for vertex in triangle) for triangle in triangles])
-
-    filtered_triangles = triangles[mask]
-
-    return filtered_triangles
-
-
-def update_triangle_indices(triangles, filtered_triangles, removed_indices):
-    """
-    Updates the triangle data after points have been removed.
-
-    :param triangles: Numpy array of original triangles (num_triangles, 3).
-    :type triangles: np.ndarray
-    :param filtered_triangles: Filtered numpy array of triangles with shape (num_filtered_triangles, 3).
-    :type filtered_triangles: np.ndarray
-    :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: np.ndarray
-    :return: Updated triangle data with shape (num_filtered_triangles, 3).
-    :rtype: np.ndarray
-    """
-    index_mapping = np.zeros(np.max(triangles) + 1, dtype=int)
-    index_mapping[removed_indices] = -1
-    current_index = 0
-
-    for i in range(len(index_mapping)):
-        if index_mapping[i] != -1:
-            index_mapping[i] = current_index
-            current_index += 1
-
-    updated_triangles = np.array([[index_mapping[vertex] for vertex in triangle] for triangle in filtered_triangles])
-
-    return updated_triangles
 
 
 def run(mesh_path,
@@ -217,7 +103,7 @@ def run(mesh_path,
                                              batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        for i in range(10001):
+        for i in range(1001):
             random = generator.random()
             if random < 1.0:
                 proposal = ParameterProposalType.MODEL
