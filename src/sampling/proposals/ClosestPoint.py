@@ -59,7 +59,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         """
         super().__init__(batch_size, starting_parameters, sigma_mod, sigma_trans, sigma_rot, chain_length_step)
         self.posterior_parameters = torch.tensor(
-            np.tile(np.zeros(model.sample_size)[:, np.newaxis], (1, self.batch_size)))
+            np.tile(np.zeros(model.rank)[:, np.newaxis], (1, self.batch_size)))
         self.reference = reference.copy()
         self.target = target
         # self.target = BatchTorchMesh(target, target.id, batch_size=1)
@@ -94,7 +94,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         # The method still contains the original code, which attempted to select only a few points as observations
         # (consistent with Madsen's algorithm).
         self.posterior_parameters = torch.tensor(
-            np.tile(np.zeros(self.prior_model.sample_size)[:, np.newaxis], (1, self.batch_size)))
+            np.tile(np.zeros(self.prior_model.rank)[:, np.newaxis], (1, self.batch_size)))
         m = self.prior_model.num_points
         generator = np.random.default_rng()
         rint = generator.integers(0, self.batch_size, 1)
@@ -173,7 +173,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         cov_posterior = cov_prior - cov_prior @ K_yy_inv @ cov_prior
         self.posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior.numpy(),
                                                       cov=cov_posterior.numpy(),
-                                                      sample_size=self.prior_model.sample_size)
+                                                      rank=self.prior_model.rank)
         return self.posterior_model
 
     def propose(self, parameter_proposal_type: ParameterProposalType):

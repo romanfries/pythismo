@@ -82,7 +82,7 @@ class ModelVisualizer:
         self.app = app
         self.model = model
         self.batched_ref = batched_ref
-        self.num_parameters = self.model.sample_size + 6
+        self.num_parameters = self.model.rank + 6
         self.parameters = np.zeros(self.num_parameters)
         self.layout = self.setup_layout_and_callbacks()
 
@@ -200,7 +200,7 @@ class ChainVisualizer:
     def __init__(self, app, sampler):
         self.app = app
         self.sampler = sampler
-        self.num_parameters = self.sampler.model.sample_size + 6
+        self.num_parameters = self.sampler.model.rank + 6
         self.parameters = self.sampler.proposal.chain
         self.layout = self.setup_layout_and_callbacks()
 

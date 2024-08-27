@@ -9,6 +9,34 @@ from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 
 
 def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_prior):
+    """
+    Calculates the unnormalised log posterior given the distance of each point of the target to the closest point on the
+    surface of the current reference and the model parameters of the current reference.
+    This method can also be called for entire batches of references.
+    The prior term pushes the solution towards a more likely shape by penalizing unlikely shape deformations. A uniform
+    prior is assumed for translation and rotation. For the likelihood term, the L2 distance (independent point evaluator
+    likelihood) is used. The L2 distance is evaluated using a zero-mean Gaussian with indicated variance.
+
+    :param distances: Tensor with distances of each point of the target to the closest point on the surface of the
+    references considered with shape (num_target_points, batch_size).
+    :type distances: torch.Tensor
+    :param parameters: Tensor with the current model parameters of the references under consideration with shape
+    (num_parameters, batch_size).
+    :type parameters: torch.Tensor
+    :param translation: Tensor with the current translation parameters of the references under consideration with shape
+    (3, batch_size).
+    :type translation: torch.Tensor
+    :param rotation: Tensor with the current rotation parameters of the references under consideration with shape
+    (3, batch_size).
+    :type rotation: torch.Tensor
+    :param sigma_lm: Variance of the zero-mean Gaussian, which is used to evaluate the L2 distance. The same variance
+    value is used for all 3 dimensions (isotropic distribution).
+    :type sigma_lm: float
+    :param sigma_prior: Variance of the model parameters (prior term calculation).
+    :type sigma_prior: float
+    :return: Tensor with unnormalised log posterior values of the references considered with shape (batch_size,).
+    :rtype: torch.Tensor
+    """
     distances_squared = torch.pow(distances, 2)
     log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_prior, 2), dim=0)
@@ -22,6 +50,32 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 class PDMMetropolisSampler:
     def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
+        """
+        Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
+        allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
+        point-wise. This requirement is easy to fulfill for the shape modelling applications studied in the context of
+        this application.
+
+        :param pdm: The point distribution model (PDM) to be fitted to a given target.
+        :type pdm: PointDistributionModel
+        :param proposal: Proposal instance that defines how the new parameters are drawn for a new proposal.
+        :type proposal: GaussianRandomWalkProposal
+        :param batch_mesh: Batch of meshes, which is used to construct the instances defined by the parameters and
+        compare them with the target (i.e., calculating the posterior).
+        :type batch_mesh: BatchTorchMesh
+        :param target: Observed (partial) shape to be analysed.
+        :type target: TorchMesh
+        :param correspondences: Boolean variable that determines whether there are point correspondences between
+        references and target.
+        :type correspondences: bool
+        :param sigma_lm: Variance used (in square millimetres) when determining the likelihood term of the posterior.
+        For the likelihood term, the L2 distance (independent point evaluator likelihood) is used. The L2 distance is
+        evaluated using a zero-mean Gaussian with variance sigma_lm.
+        :type sigma_lm: float
+        :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
+        solution towards a more likely shape by penalizing unlikely shape deformations.
+        :type sigma_prior: float
+        """
         self.model = pdm
         self.proposal = proposal
         self.batch_mesh = batch_mesh
@@ -39,9 +93,25 @@ class PDMMetropolisSampler:
         self.rejected = 0
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
+        """
+        Implements the first step of the Metropolis algorithm (according to the lecture notes of the course "Statistical
+        Shape Modelling" by Marcel Lüthi). Draws new samples from the proposal distribution, defined by the proposal
+        instance.
+
+        :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) are to be drawn.
+        :type parameter_proposal_type: ParameterProposalType
+        """
         self.proposal.propose(parameter_proposal_type)
 
     def update_mesh(self, parameter_proposal_type: ParameterProposalType):
+        """
+        Updates the meshes according to the new parameter values previously drawn. The old mesh points are saved so that
+        they can be reset if the new sample is rejected.
+
+        :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) were drawn during
+        the current iteration.
+        :type parameter_proposal_type: ParameterProposalType
+        """
         if parameter_proposal_type == ParameterProposalType.MODEL:
             reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
             if self.batch_size == 1:
@@ -58,6 +128,13 @@ class PDMMetropolisSampler:
         self.points = self.batch_mesh.tensor_points
 
     def determine_quality(self, parameter_proposal_type: ParameterProposalType):
+        """
+        Initiates the calculation of the unnormalised posterior of the newly drawn sample.
+
+        :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) were drawn during
+        the current iteration.
+        :type parameter_proposal_type: ParameterProposalType
+        """
         self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
         if self.correspondences:
@@ -98,6 +175,14 @@ class PDMMetropolisSampler:
         self.posterior = posterior
 
     def decide(self):
+        """
+        Implements the second and third step of the Metropolis algorithm (according to the lecture notes of the course
+        "Statistical Shape Modelling" by Marcel Lüthi). Calculates the ratio of the unnormalised posterior values of the
+        new and old samples. Decides which samples should form the current state based on the rules of the Metropolis
+        algorithm. Parameter values (GaussianRandomWalkProposal) and mesh points (BatchMesh) are updated accordingly.
+
+        :return:
+        """
         # log-ratio!
         ratio = torch.exp(self.posterior - self.old_posterior)
         probabilities = torch.min(ratio, torch.ones_like(ratio))
@@ -113,4 +198,10 @@ class PDMMetropolisSampler:
         self.rejected += (self.batch_size - decider.sum().item())
 
     def acceptance_ratio(self):
+        """
+        Returns the ratio of accepted samples to the total number of random parameter draws.
+
+        :return: Percentage of accepted samples.
+        :rtype: float
+        """
         return float(self.accepted) / (self.accepted + self.rejected)
