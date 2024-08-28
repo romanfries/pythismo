@@ -103,7 +103,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.partial_target = self.target.num_points < self.reference.num_points
         # self.target = BatchTorchMesh(target, target.id, batch_size=1)
         self.prior_model = model
-        self.posterior_model = self.calculate_posterior_model(batched_reference)
+        self.posterior_model, self.projection_matrix = self.calculate_posterior_model(batched_reference)
         self.old_posterior_parameters = None
 
     def calculate_posterior_model(self, batched_reference, sigma_n=3.0, sigma_v=100):
@@ -128,6 +128,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :return: Calculated posterior model.
         :rtype: PointDistributionModel
         """
+        # TODO: Question: Does something need to be adjusted regarding the pose parameters?
         self.posterior_parameters = torch.tensor(
             np.tile(np.zeros(self.prior_model.rank)[:, np.newaxis], (1, self.batch_size)))
         m = self.prior_model.num_points
@@ -207,10 +208,12 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             cov_prior[indices.flatten()][:, indices.flatten()] + cov_reshaped[indices.flatten()][:, indices.flatten()])
         K_xy = cov_prior[:, indices.flatten()]
         cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
-        self.posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior.numpy(),
+        posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior.numpy(),
                                                       cov=cov_posterior.numpy(),
                                                       rank=self.prior_model.rank)
-        return self.posterior_model
+        projection_matrix = np.diag(1 / np.sqrt(self.prior_model.get_eigenvalues())) @ np.transpose(
+            self.prior_model.eigenvectors) @ posterior_model.get_components()
+        return posterior_model, torch.tensor(projection_matrix)
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -239,7 +242,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             # self.parameters = torch.tensor(get_parameters(
             #    reconstructed_points.reshape((3 * self.prior_model.num_points, -1)) - self.prior_model.mean,
             #    self.prior_model.components))
-            self.parameters = torch.tensor(projection_matrix) @ self.posterior_parameters
+            self.parameters = self.projection_matrix @ self.posterior_parameters
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.translation = self.translation + perturbations * self.sigma_trans * (1 / torch.sqrt(torch.Tensor(
                 self.prior_model.num_points)))
