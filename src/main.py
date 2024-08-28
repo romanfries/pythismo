@@ -3,12 +3,13 @@ from pathlib import Path
 import os
 
 import numpy as np
+import torch
 
 import custom_io
 from model.PointDistribution import PointDistributionModel
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
-from src.mesh.TMesh import BatchTorchMesh
+from src.mesh.TMesh import BatchTorchMesh, create_artificial_partial_target
 from src.sampling.proposals.ClosestPoint import ClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 from visualization.DashViewer import MainVisualizer
@@ -29,6 +30,7 @@ def run(mesh_path,
         # TODO: Think again: Does it make sense to represent the target as a TorchMesh?
         target = reference.copy()
         target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.rank)))
+        target = create_artificial_partial_target(target)
         reference.set_points(model.get_points_from_parameters(np.zeros(model.rank)))
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
@@ -37,7 +39,6 @@ def run(mesh_path,
                                              batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        model = random_walk_2.calculate_posterior_model(batched_reference)
         for i in range(10001):
             random = generator.random()
             if random < 1.0:
@@ -87,14 +88,14 @@ def run(mesh_path,
         model = PointDistributionModel(meshes=meshes)
 
         if simplify_model:
-            reference = model.decimate(200)
+            reference = model.decimate(1000)
         else:
             reference = meshes[0]
 
         # TODO: Think again: Does it make sense to represent the target as a TorchMesh?
         target = reference.copy()
         target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.rank)))
-        # target = create_artificial_partial_target(target)
+        target = create_artificial_partial_target(target)
         reference.set_points(model.get_points_from_parameters(np.zeros(model.rank)))
         batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
 
@@ -103,7 +104,7 @@ def run(mesh_path,
                                              batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        for i in range(1001):
+        for i in range(0):
             random = generator.random()
             if random < 1.0:
                 proposal = ParameterProposalType.MODEL
@@ -115,7 +116,7 @@ def run(mesh_path,
             sampler.determine_quality(proposal)
             sampler.decide()
 
-        return batched_reference, model, sampler
+        return batched_reference, random_walk_2.posterior_model, sampler
 
 
 class Main:
@@ -124,6 +125,7 @@ class Main:
 
 
 if __name__ == "__main__":
+    # torch.set_default_tensor_type(torch.cuda.FloatTensor)
     main = Main()
     # batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
     #                                         landmark_path="datasets/femur-data/project-data/landmarks",
@@ -138,7 +140,7 @@ if __name__ == "__main__":
     batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=False,
+                                            read_model=True,
                                             simplify_model=True
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)

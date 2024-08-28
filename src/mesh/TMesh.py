@@ -360,6 +360,9 @@ class BatchTorchMesh(TorchMesh):
         warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
 
 
+# The following methods create an artificial partial target from a full mesh by removing points above a defined plane
+# from the mesh.
+
 def create_artificial_partial_target(full_target):
     """
     Creates a partial target, whereby all points above a defined plane are removed from a given mesh instance.
@@ -404,7 +407,7 @@ def define_plane_from_points(p1, p2, p3):
 
 def remove_points_above_plane(points, normal, d):
     """
-    Removes all points from the array that lie above the defined level.
+    Removes all points from the array that lie above the defined plane.
 
     :param points: Numpy array of points with shape (num_points, 3).
     :type points: np.ndarray

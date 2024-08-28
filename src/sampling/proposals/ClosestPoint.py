@@ -8,9 +8,47 @@ from src.model.PointDistribution import PointDistributionModel, get_parameters
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType, GaussianRandomWalkProposal
 
 
+def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
+    """
+    Checks if given points is on one of some line segments defined by a set of interconnected boundary vertices. The
+    method can be used to test whether determined closest points are located on the border of the (partial,
+    non-watertight) target mesh.
+
+    :param point: The point to check with shape (3,).
+    :type point: np.ndarray
+    :param start: The start point of the line segment  with shape (3,).
+    :type start: np.ndarray
+    :param end: The end point of the line segment with shape (3,).
+    :type end: np.ndarray
+    :param tol: Tolerance for floating-point comparisons.
+    :type tol: float
+    :return: Boolean indicating whether the point is on the line segment.
+    :rtype: bool
+    """
+    boundary_1, boundary_2 = boundary_vertices[:, 0, :], boundary_vertices[:, 1, :]
+    boundary_1, boundary_2 = boundary_1[np.newaxis, :, np.newaxis, :], boundary_2[np.newaxis, :, np.newaxis, :]
+    points = points[:, np.newaxis, np.newaxis, :]
+
+    line = boundary_2 - boundary_1
+    vector = points - boundary_1
+
+    # 1: Check if the point is collinear with the line segment
+    cross = np.cross(line, vector)
+    res_1 = np.linalg.norm(cross, axis=-1) > tol
+
+    # 2: Check if the point is within the bounds of the segment
+    dot = np.sum(vector * line, axis=-1)
+    res_2 = dot < 0
+
+    line_norm = np.sum(line * line, axis=-1)
+    res_3 = dot > line_norm
+
+    return np.any(~(res_1 | res_2 | res_3), axis=1).squeeze()
+
+
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, reference, batched_reference, target, model, sigma_mod=0.1,
+    def __init__(self, batch_size, starting_parameters, reference, batched_reference, target, model, sigma_mod=0.5,
                  sigma_trans=0.1, sigma_rot=0.0001, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -23,7 +61,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         A random walk is then performed in this posterior space and the guessed parameters are projected into the prior
         parameter space.
         Furthermore, to keep the proposal distribution symmetrical, the posterior is centred on the current state. (In
-        this case, the current state equals the starting state, as the posterior model is only calculated at the
+        this case, the current state equals the starting state, as the posterior model is only calculated once at the
         beginning.)
         All types of parameters (posterior model and pose) are drawn independently of a Gaussian distribution with mean
         value at the previous parameter value and a standardised variance. The variance is defined separately for all 3
@@ -62,6 +100,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             np.tile(np.zeros(model.rank)[:, np.newaxis], (1, self.batch_size)))
         self.reference = reference.copy()
         self.target = target
+        self.partial_target = self.target.num_points < self.reference.num_points
         # self.target = BatchTorchMesh(target, target.id, batch_size=1)
         self.prior_model = model
         self.posterior_model = self.calculate_posterior_model(batched_reference)
@@ -89,10 +128,6 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :return: Calculated posterior model.
         :rtype: PointDistributionModel
         """
-        # TODO: Rewrite method so that partial targets are supported. To do this, the distances from all points of the
-        #   target to the next point on the chosen reference mesh must be considered (?).
-        # The method still contains the original code, which attempted to select only a few points as observations
-        # (consistent with Madsen's algorithm).
         self.posterior_parameters = torch.tensor(
             np.tile(np.zeros(self.prior_model.rank)[:, np.newaxis], (1, self.batch_size)))
         m = self.prior_model.num_points
@@ -108,10 +143,20 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         # 2: For every point s_i, i \in [0, ..., m] find the closest point c_i on the target \Gamma_T.
         target_mesh = Trimesh(self.target.tensor_points, torch.tensor(self.target.cells[0].data))
-        # sampled_points = torch.index_select(self.reference.tensor_points, 0, sampled_indexes)
-        # closest_points, _, _ = target_mesh.nearest.on_surface(sampled_points)
         closest_points, _, _ = target_mesh.nearest.on_surface(self.reference.tensor_points)
         closest_points = torch.tensor(closest_points)
+
+        # All points from the reference are mapped to the closest point of the target, even when they are not observed.
+        # To counter this, all predicted correspondences, where the predicted target point is part of the target
+        # surface's boundary, are removed.
+        on_boundary = torch.ones(m, dtype=torch.bool)
+
+        if self.partial_target:
+            outline = target_mesh.outline().entities
+            for line in outline:
+                if isinstance(line, trimesh.path.entities.Line):
+                    boundary_vertices = self.target.points[line.nodes]
+                    on_boundary = torch.tensor(is_point_on_line_segment(closest_points.numpy(), boundary_vertices))
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16
@@ -127,7 +172,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
                                                                                     "facet_normals"]))
         mean_vertex_normals = mean_vertex_normals / torch.norm(mean_vertex_normals, dim=1, keepdim=True)
 
-        # Calculate 2 perpendicular vectors for each normal.
+        # Calculate 2 perpendicular vectors for each normal to define the \Sigma_{s_{i}}.
         # Select a reference vector that is not parallel to most of the normals.
         ref = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
 
@@ -153,24 +198,15 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         mean_prior = torch.tensor(self.prior_model.mean, dtype=torch.float64)
         cov_prior = torch.tensor(self.prior_model.get_covariance(), dtype=torch.float64)
 
-        # sampled_indexes_3d = torch.cat([sampled_indexes * 3 + i for i in range(3)], dim=0)
-        # sampled_covariances = covariances[sampled_indexes, :, :]
-        # K_yy = cov_prior[sampled_indexes_3d][:, sampled_indexes_3d]
         cov_reshaped = torch.zeros((3 * m, 3 * m), dtype=torch.float64)
         indices = torch.arange(0, 3 * m, 3).unsqueeze(1) + torch.arange(3).unsqueeze(0)
-        # cov_reshaped[torch.arange(3 * m).repeat_interleave(3),
-        #             torch.arange(3 * m).view(-1, 3).repeat_interleave(3, dim=0).flatten()] = sampled_covariances \
-        #    .flatten()
-        cov_reshaped[indices.unsqueeze(-1), indices.unsqueeze(-2)] += covariances
+        indices = indices[~on_boundary]
+        cov_reshaped[indices.unsqueeze(-1), indices.unsqueeze(-2)] += covariances[~on_boundary]
 
-        K_yy_inv = torch.inverse(cov_prior + cov_reshaped)
-        # K_xy = cov_prior[:, sampled_indexes_3d]
-        # posterior_mean = mean_prior + K_xy @ K_yy_inv @ (
-        #            landmark_set[:, :, 1].transpose(0, 1).flatten().unsqueeze(1) - mean_prior[sampled_indexes_3d])
-        # posterior_cov = cov_prior - K_xy @ K_yy_inv @ K_xy.transpose(0, 1)
-        # mean_posterior = mean_prior + cov_prior @ K_yy_inv @ (
-        #            torch.tensor(reconstructed_points.flatten()).unsqueeze(-1) - mean_prior)
-        cov_posterior = cov_prior - cov_prior @ K_yy_inv @ cov_prior
+        K_yy_inv = torch.inverse(
+            cov_prior[indices.flatten()][:, indices.flatten()] + cov_reshaped[indices.flatten()][:, indices.flatten()])
+        K_xy = cov_prior[:, indices.flatten()]
+        cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
         self.posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior.numpy(),
                                                       cov=cov_posterior.numpy(),
                                                       rank=self.prior_model.rank)
@@ -195,14 +231,18 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             self.posterior_parameters = self.posterior_parameters + perturbations * self.sigma_mod
-            reconstructed_points = self.posterior_model.get_points_from_parameters(self.posterior_parameters.numpy())
+            projection_matrix = np.diag(1 / np.sqrt(self.prior_model.get_eigenvalues())) @ np.transpose(
+                self.prior_model.eigenvectors) @ self.posterior_model.get_components()
+            # reconstructed_points = self.posterior_model.get_points_from_parameters(self.posterior_parameters.numpy())
             # self.parameters = torch.tensor(np.transpose(self.prior_model.components) @ (
             #            reconstructed_points.reshape((3 * self.prior_model.num_points, -1)) - self.prior_model.mean))
-            self.parameters = torch.tensor(get_parameters(
-                reconstructed_points.reshape((3 * self.prior_model.num_points, -1)) - self.prior_model.mean,
-                self.prior_model.components))
+            # self.parameters = torch.tensor(get_parameters(
+            #    reconstructed_points.reshape((3 * self.prior_model.num_points, -1)) - self.prior_model.mean,
+            #    self.prior_model.components))
+            self.parameters = torch.tensor(projection_matrix) @ self.posterior_parameters
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.translation = self.translation + perturbations * self.sigma_trans
+            self.translation = self.translation + perturbations * self.sigma_trans * (1 / torch.sqrt(torch.Tensor(
+                self.prior_model.num_points)))
         else:
             self.rotation = self.rotation + perturbations * self.sigma_rot
         # self.parameters = torch.zeros((self.num_parameters, self.batch_size))
