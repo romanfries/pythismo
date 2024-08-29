@@ -3,7 +3,6 @@ from pathlib import Path
 import os
 
 import numpy as np
-import torch
 
 import custom_io
 from model.PointDistribution import PointDistributionModel
@@ -39,7 +38,7 @@ def run(mesh_path,
                                              batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        for i in range(10001):
+        for i in range(101):
             random = generator.random()
             if random < 1.0:
                 proposal = ParameterProposalType.MODEL
@@ -102,9 +101,9 @@ def run(mesh_path,
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.rank))
         random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.rank), reference,
                                              batched_reference, target, model)
-        sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
+        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
         generator = np.random.default_rng()
-        for i in range(0):
+        for i in range(5):
             random = generator.random()
             if random < 1.0:
                 proposal = ParameterProposalType.MODEL
@@ -140,7 +139,7 @@ if __name__ == "__main__":
     batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=True,
+                                            read_model=False,
                                             simplify_model=True
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)

@@ -204,7 +204,7 @@ class TorchMesh(Mesh):
         triangles = torch.tensor(self.cells[0].data)
         v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
         edges_a, edges_b = v1 - v0, v2 - v0
-        facet_normals = torch.cross(edges_a, edges_b)
+        facet_normals = torch.linalg.cross(edges_a, edges_b)
         facet_normals = facet_normals / torch.norm(facet_normals, dim=1, keepdim=True)
         self.cell_data.update({"facet_normals": facet_normals})
 
