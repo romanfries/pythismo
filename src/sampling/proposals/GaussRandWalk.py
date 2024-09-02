@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 from enum import Enum
@@ -12,7 +11,7 @@ class ParameterProposalType(Enum):
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, sigma_mod=0.05, sigma_trans=0.1, sigma_rot=0.0001,
+    def __init__(self, batch_size, starting_parameters, dev, sigma_mod=0.05, sigma_trans=0.1, sigma_rot=0.0001,
                  chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -25,8 +24,10 @@ class GaussianRandomWalkProposal:
         :type batch_size: int
         :param starting_parameters: Start values of the model parameters. When new parameters are drawn for the first
         time, these initial values are used as the mean value of the Gaussian distribution (for all the elements of the
-        batch). The shape of the array is assumed to be (num_model_parameters,).
-        :type starting_parameters: np.ndarray
+        batch). The shape of the tensor is assumed to be (num_model_parameters,).
+        :type starting_parameters: torch.Tensor
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
         :param sigma_mod: Variance of the model parameters.
         :type sigma_mod: float
         :param sigma_trans: Variance of the translation parameters.
@@ -38,10 +39,11 @@ class GaussianRandomWalkProposal:
         :type chain_length_step: int
         """
         self.batch_size = batch_size
-        self.parameters = torch.tensor(np.tile(starting_parameters[:, np.newaxis], (1, self.batch_size)))
-        self.num_parameters = self.parameters.shape[0]
-        self.translation = torch.zeros((3, self.batch_size))
-        self.rotation = torch.zeros((3, self.batch_size))
+        self.dev = dev
+        self.parameters = starting_parameters.unsqueeze(1).repeat(1, self.batch_size).to(self.dev)
+        self.num_parameters = self.parameters.size()[0]
+        self.translation = torch.zeros((3, self.batch_size), device=self.dev)
+        self.rotation = torch.zeros((3, self.batch_size), device=self.dev)
         self.sigma_mod = sigma_mod
         self.sigma_trans = sigma_trans
         self.sigma_rot = sigma_rot
@@ -52,8 +54,8 @@ class GaussianRandomWalkProposal:
 
         self.chain_length = 0
         self.chain_length_step = chain_length_step
-        self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0))
-        self.posterior = torch.zeros((self.batch_size, 0))
+        self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0), device=self.dev)
+        self.posterior = torch.zeros((self.batch_size, 0), device=self.dev)
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -63,9 +65,9 @@ class GaussianRandomWalkProposal:
         :type parameter_proposal_type: ParameterProposalType
         """
         if parameter_proposal_type == ParameterProposalType.MODEL:
-            perturbations = torch.randn((self.num_parameters, self.batch_size))
+            perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.parameters.device)
         else:
-            perturbations = torch.randn((3, self.batch_size))
+            perturbations = torch.randn((3, self.batch_size), device=self.translation.device)
 
         self.old_parameters = self.parameters
         self.old_translation = self.translation
@@ -74,8 +76,7 @@ class GaussianRandomWalkProposal:
         if parameter_proposal_type == ParameterProposalType.MODEL:
             self.parameters = self.parameters + perturbations * self.sigma_mod
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.translation = self.translation + perturbations * self.sigma_trans * (1 / torch.sqrt(torch.Tensor(
-                self.prior_model.num_points)))
+            self.translation = self.translation + perturbations * self.sigma_trans
         else:
             self.rotation = self.rotation + perturbations * self.sigma_rot
         # self.parameters = torch.zeros((self.num_parameters, self.batch_size))
@@ -158,10 +159,10 @@ class GaussianRandomWalkProposal:
         self.chain_length_step chain elements.
         """
         updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length +
-                                     self.chain_length_step))
+                                     self.chain_length_step), device=self.chain.device)
         updated_chain[:, :, :self.chain_length] = self.chain
         updated_posterior = torch.zeros((self.batch_size, self.chain_length +
-                                         self.chain_length_step))
+                                         self.chain_length_step), device=self.posterior.device)
         updated_posterior[:, :self.chain_length] = self.posterior
         self.chain = updated_chain
         self.posterior = updated_posterior

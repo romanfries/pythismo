@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 
 import numpy as np
+import torch
 
 import custom_io
 from model.PointDistribution import PointDistributionModel
@@ -13,8 +14,13 @@ from src.sampling.proposals.ClosestPoint import ClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 from visualization.DashViewer import MainVisualizer
 
+# Important notes for running Pytorch3d on Windows:
+# https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def run(mesh_path,
+
+def run(dev,
+        mesh_path=None,
         reference_path=None,
         model_path=None,
         read_model=False,
@@ -24,22 +30,22 @@ def run(mesh_path,
         rel_model_path = Path(model_path)
         model_path = Path.cwd().parent / rel_model_path
         model_reader = ModelReader(model_path)
-        reference = custom_io.read_meshes(reference_path)[0]
-        model = model_reader.get_model()
-        # TODO: Think again: Does it make sense to represent the target as a TorchMesh?
+        reference = custom_io.read_meshes(reference_path, dev)[0]
+        model = model_reader.get_model(dev)
+        # TODO: Think again: Does it make sense to represent the target as a TorchMeshGpu?
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.rank)))
+        target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
         target = create_artificial_partial_target(target)
-        reference.set_points(model.get_points_from_parameters(np.zeros(model.rank)))
-        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
+        reference.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=dev)), reset_com=True)
+        batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
 
-        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.rank))
-        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.rank), reference,
-                                             batched_reference, target, model)
+        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev)
+        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev,
+                                             reference, batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
-        generator = np.random.default_rng()
+        generator = torch.Generator(device=dev)
         for i in range(101):
-            random = generator.random()
+            random = torch.rand(1, device=dev, generator=generator).item()
             if random < 1.0:
                 proposal = ParameterProposalType.MODEL
             elif 0.6 <= random < 0.8:
@@ -53,7 +59,7 @@ def run(mesh_path,
         return batched_reference, model, sampler
 
     else:
-        meshes = custom_io.read_meshes(mesh_path)
+        meshes = custom_io.read_meshes(mesh_path, dev)
 
         # Currently, already registered meshes are required
         # if not registered:
@@ -91,12 +97,12 @@ def run(mesh_path,
         else:
             reference = meshes[0]
 
-        # TODO: Think again: Does it make sense to represent the target as a TorchMesh?
+        # TODO: Think again: Does it make sense to represent the target as a TorchMeshGpu?
         target = reference.copy()
         target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.rank)))
         target = create_artificial_partial_target(target)
         reference.set_points(model.get_points_from_parameters(np.zeros(model.rank)))
-        batched_reference = BatchTorchMesh(reference, 'reference', batch_size=2)
+        batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
 
         random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.rank))
         random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.rank), reference,
@@ -120,12 +126,13 @@ def run(mesh_path,
 
 class Main:
     def __init__(self):
-        pass
+        self.device = device
 
 
 if __name__ == "__main__":
     # torch.set_default_tensor_type(torch.cuda.FloatTensor)
     main = Main()
+    dev = main.device
     # batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
     #                                         landmark_path="datasets/femur-data/project-data/landmarks",
     #                                         reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
@@ -136,10 +143,11 @@ if __name__ == "__main__":
     #                                         registered=True,
     #                                         write_meshes=False
     #                                         )
-    batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
+    batched_reference, model, sampler = run(dev,
+                                            "datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=False,
+                                            read_model=True,
                                             simplify_model=True
                                             )
     visualizer = MainVisualizer(batched_reference, model, sampler)

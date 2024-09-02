@@ -39,10 +39,9 @@ class ModelReader:
         for file in self.model_path.iterdir():
             if file.suffix == '.h5':
                 self.model = load_model_h5(file)
-        self.read_model = PointDistributionModel(meshes=None, read_in=True, model=self.model)
 
-    def get_model(self):
-        return self.read_model
+    def get_model(self, dev):
+        return PointDistributionModel(meshes=None, read_in=True, model=self.model, dev=dev)
 
 
 

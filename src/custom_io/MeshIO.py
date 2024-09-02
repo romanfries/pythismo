@@ -23,14 +23,14 @@ def read_and_simplify_meshes(read_path, write_path, target=200):
     return meshes, simplified_meshes
 
 
-def read_meshes(relative_path):
+def read_meshes(relative_path, dev):
     relative_path = Path(relative_path)
     mesh_path = Path.cwd().parent / relative_path
     meshes = []
     for file in mesh_path.iterdir():
         if file.suffix == '.stl' or file.suffix == '.ply':
             mesh_io = MeshReaderWriter(file)
-            mesh = mesh_io.read_mesh()
+            mesh = mesh_io.read_mesh(dev)
             meshes.append(mesh)
     return meshes
 
@@ -65,8 +65,8 @@ class MeshReaderWriter:
         self.name = self.file.stem
         self.service = TorchMeshIOService()
 
-    def read_mesh(self):
-        mesh = self.service.read_mesh(self.file, self.name)
+    def read_mesh(self, dev):
+        mesh = self.service.read_mesh(self.file, self.name, dev)
         return mesh
 
     def write_mesh(self, mesh):

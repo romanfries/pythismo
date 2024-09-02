@@ -10,12 +10,12 @@ def extract_reference(meshes, identifier):
     This mesh is removed from the list.
 
     :param meshes: List of mesh instances to be searched.
-    :type meshes: list of TorchMesh
+    :type meshes: list of TorchMeshGpu
     :param identifier: Identifier string to be searched for.
     :type identifier: str
     :return: Tuple with two elements:
-        - list of TorchMesh: Original list of meshes without the mesh extracted.
-        - TorchMesh: Extracted mesh instance.
+        - list of TorchMeshGpu: Original list of meshes without the mesh extracted.
+        - TorchMeshGpu: Extracted mesh instance.
     """
     new_meshes = []
     reference = None
@@ -69,7 +69,7 @@ class ICPAnalyser:
         in a local minimum.
 
         :param meshes: List of mesh instances to be aligned.
-        :type meshes: list of TorchMesh
+        :type meshes: list of TorchMeshGpu
         :param iterations: Number of iterations per alignment
         :type iterations: int
         """
@@ -91,4 +91,4 @@ class ICPAnalyser:
         for i, mesh in enumerate(self.meshes):
             _, transformed_points, _ = trimesh.registration.icp(mesh.points, self.reference.points,
                                                                 max_iterations=self.iterations)
-            mesh.set_points(transformed_points)
+            mesh.set_points(transformed_points, reset_com=True)

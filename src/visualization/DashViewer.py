@@ -8,7 +8,7 @@ from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 from flask import request
 
-from src.mesh.TMesh import get_transformation_matrix, TorchMesh
+from src.mesh.TMesh import get_transformation_matrix, TorchMeshGpu
 
 
 class BatchMeshVisualizer:
@@ -164,7 +164,7 @@ class ModelVisualizer:
             new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
                                                                                 self.batched_ref.cells[0].data.astype(
                                                                                     np.int64))])
-            new_torch_mesh = TorchMesh(new_mesh, 'display')
+            new_torch_mesh = TorchMeshGpu(new_mesh, 'display')
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
             x, y, z = np.transpose(new_torch_mesh.points)
@@ -251,7 +251,7 @@ class ChainVisualizer:
                                                                                 self.sampler.batch_mesh.cells[
                                                                                     0].data.astype(
                                                                                     np.int64))])
-            new_torch_mesh = TorchMesh(new_mesh, 'display')
+            new_torch_mesh = TorchMeshGpu(new_mesh, 'display')
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
             x, y, z = np.transpose(new_torch_mesh.points)

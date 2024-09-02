@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import trimesh.base
+from pytorch3d.loss.point_mesh_distance import point_face_distance
 from trimesh import Trimesh
 
 from src.mesh.TMesh import BatchTorchMesh
@@ -10,45 +11,43 @@ from src.sampling.proposals.GaussRandWalk import ParameterProposalType, Gaussian
 
 def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
     """
-    Checks if given points is on one of some line segments defined by a set of interconnected boundary vertices. The
-    method can be used to test whether determined closest points are located on the border of the (partial,
+    Checks if given points are on one of some line segments defined by a set of interconnected boundary vertices.
+    This method can be used to test whether determined closest points are located on the border of the (partial,
     non-watertight) target mesh.
 
-    :param point: The point to check with shape (3,).
-    :type point: np.ndarray
-    :param start: The start point of the line segment  with shape (3,).
-    :type start: np.ndarray
-    :param end: The end point of the line segment with shape (3,).
-    :type end: np.ndarray
+    :param points: The points to check with shape (N, 3).
+    :type points: torch.Tensor
+    :param boundary_vertices: The boundary vertices with shape (M, 2, 3).
+    :type boundary_vertices: torch.Tensor
     :param tol: Tolerance for floating-point comparisons.
     :type tol: float
-    :return: Boolean indicating whether the point is on the line segment.
-    :rtype: bool
+    :return: Boolean indicating whether the points are on the line segments.
+    :rtype: torch.Tensor
     """
     boundary_1, boundary_2 = boundary_vertices[:, 0, :], boundary_vertices[:, 1, :]
-    boundary_1, boundary_2 = boundary_1[np.newaxis, :, np.newaxis, :], boundary_2[np.newaxis, :, np.newaxis, :]
-    points = points[:, np.newaxis, np.newaxis, :]
+    boundary_1, boundary_2 = boundary_1.unsqueeze(0).unsqueeze(2), boundary_2.unsqueeze(0).unsqueeze(2)
+    points = points.unsqueeze(1).unsqueeze(1)
 
     line = boundary_2 - boundary_1
     vector = points - boundary_1
 
-    # 1: Check if the point is collinear with the line segment
-    cross = np.cross(line, vector)
-    res_1 = np.linalg.norm(cross, axis=-1) > tol
+    # 1: Check if the points are collinear with the line segment
+    cross = torch.cross(line, vector, dim=-1)
+    res_1 = torch.linalg.norm(cross, dim=-1) > tol
 
-    # 2: Check if the point is within the bounds of the segment
-    dot = np.sum(vector * line, axis=-1)
+    # 2: Check if the points are within the bounds of the segment
+    dot = torch.sum(vector * line, dim=-1)
     res_2 = dot < 0
 
-    line_norm = np.sum(line * line, axis=-1)
+    line_norm = torch.sum(line * line, dim=-1)
     res_3 = dot > line_norm
 
-    return np.any(~(res_1 | res_2 | res_3), axis=1).squeeze()
+    return torch.any(~(res_1 | res_2 | res_3), dim=1).squeeze()
 
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, reference, batched_reference, target, model, sigma_mod=0.5,
+    def __init__(self, batch_size, starting_parameters, dev, reference, batched_reference, target, model, sigma_mod=0.5,
                  sigma_trans=0.1, sigma_rot=0.0001, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -71,17 +70,19 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type batch_size: int
         :param starting_parameters: Start values of the model parameters. When new parameters are drawn for the first
         time, these initial values are used as the mean value of the Gaussian distribution (for all the elements of the
-        batch). The shape of the array is assumed to be (num_model_parameters,).
-        :type starting_parameters: np.ndarray
+        batch). The shape of the tensor is assumed to be (num_model_parameters,).
+        :type starting_parameters: torch.Tensor
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
         :param reference: Single reference mesh. Necessary for calculating the analytic posterior.
-        :type reference: TorchMesh
+        :type reference: TorchMeshGpu
         :param batched_reference: Current batch with reference meshes. When the analytic posterior is calculated, an
         element of the batch is randomly selected from whose points the distances to the target are determined.
         (Redundant at the moment, but at the beginning the class was designed so that the analytic posterior is
         recalculated after each iteration.)
         :type batched_reference: BatchTorchMesh
         :param target: Instance to be fitted. Necessary for calculating the analytic posterior.
-        :type target: TorchMesh
+        :type target: TorchMeshGpu
         :param model: Prior model, which serves as the starting point for calculating the posterior model.
         :type model: PointDistributionModel
         :param sigma_mod: Variance of the model parameters. Note: May be set larger for this type of proposal compared
@@ -95,9 +96,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         samples were drawn, the chain must be extended again accordingly.
         :type chain_length_step: int
         """
-        super().__init__(batch_size, starting_parameters, sigma_mod, sigma_trans, sigma_rot, chain_length_step)
-        self.posterior_parameters = torch.tensor(
-            np.tile(np.zeros(model.rank)[:, np.newaxis], (1, self.batch_size)))
+        super().__init__(batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, chain_length_step)
+        self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.reference = reference.copy()
         self.target = target
         self.partial_target = self.target.num_points < self.reference.num_points
@@ -129,35 +129,60 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :rtype: PointDistributionModel
         """
         # TODO: Question: Does something need to be adjusted regarding the pose parameters?
-        self.posterior_parameters = torch.tensor(
-            np.tile(np.zeros(self.prior_model.rank)[:, np.newaxis], (1, self.batch_size)))
+        # (Especially if the posterior is not only to be recalculated at the start of sampling.)
+        self.posterior_parameters = torch.zeros(self.prior_model.rank, 1, device=self.dev) \
+            .repeat(1, self.batch_size)
         m = self.prior_model.num_points
-        generator = np.random.default_rng()
-        rint = generator.integers(0, self.batch_size, 1)
-        reconstructed_points = np.squeeze(batched_reference.points[:, :, rint])
+        generator = torch.Generator()
+        generator.manual_seed(torch.initial_seed())
+        rint = torch.randint(0, self.batch_size, (1,), generator=generator)
+        reconstructed_points = batched_reference.tensor_points[:, :, rint].squeeze()
         # reconstructed_points = self.prior_model.get_points_from_parameters(self.get_parameters().numpy()[:, rint])
-        self.reference.set_points(reconstructed_points)
+        self.reference.set_points(reconstructed_points, reset_com=True)
 
         # 1: Sample m points {s_i} on the current model instance \Gamma[\alpha].
         # sampled_indexes = torch.tensor(np.random.choice(np.arange(0, self.prior_model.num_points), m, replace=False),
         #                               dtype=torch.int64)
 
         # 2: For every point s_i, i \in [0, ..., m] find the closest point c_i on the target \Gamma_T.
-        target_mesh = Trimesh(self.target.tensor_points, torch.tensor(self.target.cells[0].data))
-        closest_points, _, _ = target_mesh.nearest.on_surface(self.reference.tensor_points)
-        closest_points = torch.tensor(closest_points)
+        # Trimesh doesn't support GPU operations yet.
+        target_mesh = Trimesh(self.target.tensor_points.cpu(), self.target.cells[0].data.cpu())
+        closest_points, _, _ = target_mesh.nearest.on_surface(self.reference.tensor_points.cpu())
+        closest_points = torch.tensor(closest_points, dtype=torch.float, device=self.dev)
+
+        # Alternative calculation
+        # reference_clouds = self.reference.to_pytorch3d_pointclouds()
+        # target_batch_mesh = BatchTorchMesh(self.target, 'target', self.dev, batch_size=1)
+        # target_meshes = target_batch_mesh.to_pytorch3d_meshes()
+        #
+        # verts_packed = target_meshes.verts_packed()
+        # faces_packed = target_meshes.faces_packed()
+        # tris = verts_packed[faces_packed]  # (T, 3, 3)
+        # tris_first_idx = target_meshes.mesh_to_faces_packed_first_idx()
+        # max_tris = reference_meshes.num_faces_per_mesh().max().item()
+        #
+        # points = reference_clouds.points_packed()  # (P, 3)
+        # points_first_idx = reference_clouds.cloud_to_packed_first_idx()
+        # max_points = reference_clouds.num_points_per_cloud().max().item()
+        #
+        # # point to face squared distance: shape (P,)
+        # # requires dtype=torch.float32
+        # point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
+        #                                                tris_first_idx, max_points).double().reshape(
+        #     (-1, int(self.target.num_points)))
+        # point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
         # All points from the reference are mapped to the closest point of the target, even when they are not observed.
         # To counter this, all predicted correspondences, where the predicted target point is part of the target
         # surface's boundary, are removed.
-        on_boundary = torch.ones(m, dtype=torch.bool)
+        on_boundary = torch.ones(m, dtype=torch.bool, device=self.dev)
 
         if self.partial_target:
             outline = target_mesh.outline().entities
             for line in outline:
                 if isinstance(line, trimesh.path.entities.Line):
-                    boundary_vertices = self.target.points[line.nodes]
-                    on_boundary = torch.tensor(is_point_on_line_segment(closest_points.numpy(), boundary_vertices))
+                    boundary_vertices = self.target.tensor_points[line.nodes]
+                    on_boundary = torch.tensor(is_point_on_line_segment(closest_points, boundary_vertices))
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16
@@ -167,20 +192,20 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         landmark_set = torch.stack((self.reference.tensor_points, differences))
         self.reference.calc_facet_normals()
         mean_vertex_normals = torch.tensor(trimesh.geometry.mean_vertex_normals(self.prior_model.num_points,
-                                                                                torch.tensor(
-                                                                                    self.reference.cells[0].data),
+                                                                                self.reference.cells[0].data.cpu(),
                                                                                 self.reference.cell_data[
-                                                                                    "facet_normals"]))
+                                                                                    "facet_normals"][0].data.cpu()),
+                                           dtype=torch.float, device=self.dev)
         mean_vertex_normals = mean_vertex_normals / torch.norm(mean_vertex_normals, dim=1, keepdim=True)
 
         # Calculate 2 perpendicular vectors for each normal to define the \Sigma_{s_{i}}.
         # Select a reference vector that is not parallel to most of the normals.
-        ref = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
+        ref = torch.tensor([1.0, 0.0, 0.0], device=self.dev)
 
         # To avoid issues where the normal might be parallel to the reference vector
         # we create a matrix to select the next-best vector for those cases.
         parallel_mask = (torch.abs(mean_vertex_normals @ ref) > 0.9).unsqueeze(1)
-        alt = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
+        alt = torch.tensor([0.0, 1.0, 0.0], device=self.dev)
         ref = torch.where(parallel_mask, alt, ref)
 
         # Compute the first tangent vector by taking the cross product of the normal and the reference vector.
@@ -192,15 +217,16 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         v2 = v2 / torch.norm(v2, dim=1, keepdim=True)
 
         directions = torch.stack((mean_vertex_normals, v1, v2), dim=2)
-        sigma = torch.diag(torch.tensor([sigma_n, sigma_v, sigma_v], dtype=torch.float64))
+        sigma = torch.diag(torch.tensor([sigma_n, sigma_v, sigma_v], device=self.dev))
         covariances = directions @ sigma @ directions.transpose(1, 2)
 
         # 4: Compute the analytic posterior \mathcal{M}_{\alpha} (eq. 10) with L and {\Sigma_{s_{i}}}.
-        mean_prior = torch.tensor(self.prior_model.mean, dtype=torch.float64)
-        cov_prior = torch.tensor(self.prior_model.get_covariance(), dtype=torch.float64)
+        mean_prior = self.prior_model.mean
+        cov_prior = torch.tensor(self.prior_model.get_covariance())
 
-        cov_reshaped = torch.zeros((3 * m, 3 * m), dtype=torch.float64)
-        indices = torch.arange(0, 3 * m, 3).unsqueeze(1) + torch.arange(3).unsqueeze(0)
+        cov_reshaped = torch.zeros((3 * m, 3 * m), device=self.dev)
+        indices = torch.arange(0, 3 * m, 3, device=self.dev).unsqueeze(1) + torch.arange(3, device=self.dev).unsqueeze(
+            0)
         indices = indices[~on_boundary]
         cov_reshaped[indices.unsqueeze(-1), indices.unsqueeze(-2)] += covariances[~on_boundary]
 
@@ -208,12 +234,12 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             cov_prior[indices.flatten()][:, indices.flatten()] + cov_reshaped[indices.flatten()][:, indices.flatten()])
         K_xy = cov_prior[:, indices.flatten()]
         cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
-        posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior.numpy(),
-                                                      cov=cov_posterior.numpy(),
-                                                      rank=self.prior_model.rank)
-        projection_matrix = np.diag(1 / np.sqrt(self.prior_model.get_eigenvalues())) @ np.transpose(
-            self.prior_model.eigenvectors) @ posterior_model.get_components()
-        return posterior_model, torch.tensor(projection_matrix)
+        posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior,
+                                                 cov=cov_posterior,
+                                                 rank=self.prior_model.rank)
+        projection_matrix = torch.diag(1 / torch.sqrt(
+            self.prior_model.get_eigenvalues())) @ self.prior_model.eigenvectors.T @ posterior_model.get_components()
+        return posterior_model, projection_matrix
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -223,9 +249,9 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type parameter_proposal_type: ParameterProposalType
         """
         if parameter_proposal_type == ParameterProposalType.MODEL:
-            perturbations = torch.randn((self.num_parameters, self.batch_size))
+            perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
-            perturbations = torch.randn((3, self.batch_size))
+            perturbations = torch.randn((3, self.batch_size), device=self.dev)
 
         self.old_parameters = self.parameters
         self.old_posterior_parameters = self.posterior_parameters
@@ -234,8 +260,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             self.posterior_parameters = self.posterior_parameters + perturbations * self.sigma_mod
-            projection_matrix = np.diag(1 / np.sqrt(self.prior_model.get_eigenvalues())) @ np.transpose(
-                self.prior_model.eigenvectors) @ self.posterior_model.get_components()
+            # projection_matrix = np.diag(1 / np.sqrt(self.prior_model.get_eigenvalues())) @ np.transpose(
+            #    self.prior_model.eigenvectors) @ self.posterior_model.get_components()
             # reconstructed_points = self.posterior_model.get_points_from_parameters(self.posterior_parameters.numpy())
             # self.parameters = torch.tensor(np.transpose(self.prior_model.components) @ (
             #            reconstructed_points.reshape((3 * self.prior_model.num_points, -1)) - self.prior_model.mean))

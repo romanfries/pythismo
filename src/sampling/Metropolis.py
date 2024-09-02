@@ -1,6 +1,5 @@
 import math
 
-import numpy as np
 import torch
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 from torch.distributions import Uniform
@@ -8,7 +7,7 @@ from torch.distributions import Uniform
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_prior):
+def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_prior, dev):
     """
     Calculates the unnormalised log posterior given the distance of each point of the target to the closest point on the
     surface of the current reference and the model parameters of the current reference.
@@ -36,14 +35,16 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     :type sigma_prior: float
     :return: Tensor with unnormalised log posterior values of the references considered with shape (batch_size,).
     :rtype: torch.Tensor
+    :param dev: An object representing the device on which the tensor operations are or will be allocated.
+    :type dev: torch.device
     """
     distances_squared = torch.pow(distances, 2)
     log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_prior, 2), dim=0)
-    uniform_translation_prior = Uniform(-100, 100)
+    uniform_translation_prior = Uniform(torch.tensor(-100, device=dev), torch.tensor(100, device=dev))
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
-    uniform_rotation_prior = Uniform(-math.pi, math.pi)
+    uniform_rotation_prior = Uniform(torch.tensor(-math.pi, device=dev), torch.tensor(math.pi, device=dev))
     log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
     return log_likelihoods + log_prior + log_translation + log_rotation
 
@@ -64,7 +65,7 @@ class PDMMetropolisSampler:
         compare them with the target (i.e., calculating the posterior).
         :type batch_mesh: BatchTorchMesh
         :param target: Observed (partial) shape to be analysed.
-        :type target: TorchMesh
+        :type target: TorchMeshGpu
         :param correspondences: Boolean variable that determines whether there are point correspondences between
         references and target.
         :type correspondences: bool
@@ -78,6 +79,8 @@ class PDMMetropolisSampler:
         """
         self.model = pdm
         self.proposal = proposal
+        # Make sure all components are on the same device, i.e., model, proposal, meshes.
+        self.dev = self.proposal.dev
         self.batch_mesh = batch_mesh
         self.points = self.batch_mesh.tensor_points
         self.target = target
@@ -113,18 +116,18 @@ class PDMMetropolisSampler:
         :type parameter_proposal_type: ParameterProposalType
         """
         if parameter_proposal_type == ParameterProposalType.MODEL:
-            reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters().numpy())
+            reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters())
             if self.batch_size == 1:
-                reconstructed_points = reconstructed_points[:, :, np.newaxis]
-            old_points = self.batch_mesh.points
+                reconstructed_points = reconstructed_points.unsqueeze(2)
+            old_points = self.batch_mesh.tensor_points
             self.batch_mesh.set_points(reconstructed_points)
-            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy())
-            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters().numpy())
-            self.batch_mesh.old_points = torch.tensor(old_points)
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
+            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters())
+            self.batch_mesh.old_points = old_points
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters().numpy(), save_old=True)
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters(), save_old=True)
         else:
-            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters().numpy(), save_old=True)
+            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters(), save_old=True)
         self.points = self.batch_mesh.tensor_points
 
     def determine_quality(self, parameter_proposal_type: ParameterProposalType):
@@ -163,14 +166,14 @@ class PDMMetropolisSampler:
             # point to face squared distance: shape (P,)
             # requires dtype=torch.float32
             point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
-                                                           tris_first_idx, max_points).double().reshape(
+                                                           tris_first_idx, max_points).reshape(
                 (-1, int(self.target.num_points)))
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
             # Target is a point cloud, reference a mesh.
             posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
                                                    self.proposal.translation, self.proposal.rotation, self.sigma_lm,
-                                                   self.sigma_prior)
+                                                   self.sigma_prior, self.dev)
 
         self.posterior = posterior
 
@@ -186,7 +189,7 @@ class PDMMetropolisSampler:
         # log-ratio!
         ratio = torch.exp(self.posterior - self.old_posterior)
         probabilities = torch.min(ratio, torch.ones_like(ratio))
-        randoms = torch.rand(self.batch_size)
+        randoms = torch.rand(self.batch_size, device=self.dev)
         decider = torch.gt(probabilities, randoms)
         # decider = torch.ones(self.batch_size).bool()
         self.posterior = torch.where(decider, self.posterior, self.old_posterior)

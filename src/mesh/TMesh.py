@@ -7,41 +7,38 @@ from quad_mesh_simplify import simplify_mesh
 import warnings
 
 
-def get_transformation_matrix(angles):
+def get_transformation_matrix(angles: torch.Tensor) -> torch.Tensor:
     """
     Generates suitable transformation matrices for given Euler angles (ZYX convention).
-    The code is inspired by J. Gregson, but extended so that it can handle batches of input angles:
-    https://gist.github.com/jamesgregson/67eb5509af0d8b372f25146d5e3c5149
 
-    :param angles: Numpy array with (optional: a batch of) Euler coordinates in radians (shape (3,) or (3, batch_size)).
-    :type angles: np.ndarray
-    :return: Numpy array with (a batch of) transformation matrix/matrices (shape (4, 4) or (4, 4, batch_size)).
-    :rtype: np.ndarray
+    :param angles: Torch tensor with (optional: a batch of) Euler coordinates in radians (shape (3,) or
+    (3, batch_size)).
+    :type angles: torch.Tensor
+    :return: Torch tensor with (a batch of) transformation matrix/matrices (shape (4, 4) or (4, 4, batch_size)).
+    :rtype: torch.Tensor
     """
     if angles.ndim == 1:
-        angles = angles[:, np.newaxis]
-    cx, cy, cz = np.cos(angles)
-    sx, sy, sz = np.sin(angles)
-    transformation_matrices = np.zeros((4, 4, angles.shape[1]))
+        angles = angles[:, None]
+
+    cx, cy, cz = torch.cos(angles)
+    sx, sy, sz = torch.sin(angles)
+
+    batch_size = angles.size()[1]
+    transformation_matrices = torch.zeros((4, 4, batch_size), device=angles.device, dtype=angles.dtype)
 
     transformation_matrices[0, 0, :] = cy * cz
     transformation_matrices[0, 1, :] = -cx * sz + cz * sx * sy
     transformation_matrices[0, 2, :] = cx * cz * sy + sx * sz
     transformation_matrices[1, 0, :] = cy * sz
-    transformation_matrices[0, 3, :] = 0
-
     transformation_matrices[1, 1, :] = cx * cz + sx * sy * sz
     transformation_matrices[1, 2, :] = cx * sy * sz - cz * sx
     transformation_matrices[2, 0, :] = -sy
-    transformation_matrices[1, 3, :] = 0
-
     transformation_matrices[2, 1, :] = cy * sx
     transformation_matrices[2, 2, :] = cx * cy
-    transformation_matrices[2, 3, :] = 0
     transformation_matrices[3, 3, :] = 1
 
-    if angles.shape[1] == 1:
-        transformation_matrices = np.squeeze(transformation_matrices)
+    if batch_size == 1:
+        transformation_matrices = transformation_matrices.squeeze(-1)
 
     return transformation_matrices
 
@@ -51,17 +48,17 @@ class TorchMeshIOService:
         self.reader = reader
         self.writer = writer
 
-    def read_mesh(self, file_path, identifier):
+    def read_mesh(self, file_path, identifier, dev):
         mesh = self.reader(file_path)
-        torch_mesh = TorchMesh.from_mesh(mesh, identifier)
+        torch_mesh = TorchMeshGpu.from_mesh(mesh, identifier, dev)
         return torch_mesh
 
     def write_mesh(self, torch_mesh, file_path):
         self.writer(file_path, torch_mesh)
 
 
-class TorchMesh(Mesh):
-    def __init__(self, mesh, identifier):
+class TorchMeshGpu(Mesh):
+    def __init__(self, mesh, identifier, dev):
         """
         This class is an extension of the meshio.Mesh class. It extends the superclass with a torch.Tensor to perform
         mesh calculations using PyTorch. The dimensionality is fixed at 3.
@@ -71,78 +68,131 @@ class TorchMesh(Mesh):
         :type mesh: meshio.Mesh
         :param identifier: Identification string.
         :type identifier: str
-
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
         """
         # possibly prone to errors
         arg_dict = vars(mesh)
         arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id', 'num_points',
-                                                                                 'dimensionality', 'initial_com'}}
+                                                                                 'dimensionality', 'initial_com',
+                                                                                 'dev'}}
         args = list(arg_dict.values())
         super().__init__(*args)
-        self.tensor_points = torch.tensor(self.points)
-        self.num_points = self.points.shape[0]
-        self.dimensionality = self.points.shape[1]
+        self.dev = dev
+        # If the condition is met, the constructor was called from the ‘BatchTorchMesh’ subclass.
+        if isinstance(self.points, np.ndarray) and np.array_equal(self.points, np.array(None, dtype=object)):
+            self.tensor_points = mesh.tensor_points
+        else:
+            self.tensor_points = torch.tensor(self.points, dtype=torch.float32, device=self.dev)
+        self.points = None
+        self.cells[0].data = torch.tensor(self.cells[0].data, dtype=torch.int64, device=self.dev)
+        self.num_points = self.tensor_points.size()[0]
+        self.dimensionality = self.tensor_points.size()[1]
         self.id = identifier
         self.initial_com = self.center_of_mass()
 
+    @property
+    def cells_dict(self):
+        """
+        Adaptation of an internal meshio.Mesh method to ensure compatibility with Torch.
+
+        :return: Dictionary containing the triangle data.
+        :rtype: dict
+        """
+        cells_dict = {}
+        for cell_block in self.cells:
+            if cell_block.type not in cells_dict:
+                cells_dict[cell_block.type] = []
+            cells_dict[cell_block.type].append(cell_block.data)
+        # concatenate
+        for key, value in cells_dict.items():
+            cells_dict[key] = value
+        return cells_dict
+
+    @property
+    def cell_data_dict(self):
+        """
+        Adaptation of an internal meshio.Mesh method to ensure compatibility with Torch.
+
+        :return: Dictionary containing a dictionary with additional triangle data.
+        :rtype: dict
+        """
+        cell_data_dict = {}
+        for key, value_list in self.cell_data.items():
+            cell_data_dict[key] = {}
+            for value, cell_block in zip(value_list, self.cells):
+                if cell_block.type not in cell_data_dict[key]:
+                    cell_data_dict[key][cell_block.type] = []
+                cell_data_dict[key][cell_block.type].append(value)
+
+            for cell_type, val in cell_data_dict[key].items():
+                cell_data_dict[key][cell_type] = val
+        return cell_data_dict
+
     @classmethod
-    def from_mesh(cls, mesh, identifier):
+    def from_mesh(cls, mesh, identifier, dev):
         """
         Redundant method.
+
         :param mesh:
         :param identifier:
+        :param dev:
         :return:
         """
-        return cls(mesh, identifier)
+        return cls(mesh, identifier, dev)
 
-    def simplify_qem(self, target=1000):
+    def simplify_qem(self, target: int = 1000):
         """
         Reduces the mesh to the specified number of points and returns a new instance with these new points/triangles.
         The identifier remains unchanged.
         The algorithm used comes from the paper by M. Garland and P. Heckbert: "Surface Simplification Using Quadric
         Error Metrics" (1997) implemented by J. Magnusson. For more information, please visit
-        https://github.com/jannessm/quadric-mesh-simplification
-
+        https://github.com/jannessm/quadric-mesh-simplification.
+        Remark: The function simplify_mesh and the library meshio still expect NumPy arrays, so the PyTorch tensors need
+        to be converted to NumPy arrays before passing them to these functions, and then the results are converted back
+        to PyTorch tensors after processing. This can be disadvantageous for the runtime.
 
         :param target: Number of nodes that the final mesh will have.
         :type target: int
         :return: Reduced TorchMesh instance with the specified number of points/nodes.
-        :rtype: TorchMesh
+        :rtype: TorchMeshGpu
         """
-        new_coordinates, new_triangles = simplify_mesh(self.points.astype(np.float64),
-                                                       self.cells[0].data.astype(np.uint32), num_nodes=target)
-        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                     new_triangles.astype(np.int64))])
-        # return self.from_mesh(new_mesh, self.id + '_simplified_' + str(target))
-        return self.from_mesh(new_mesh, self.id)
+        new_coordinates, new_triangles = simplify_mesh(self.tensor_points.cpu().numpy().astype(np.float64),
+                                                       self.cells[0].data.cpu().numpy().astype(np.uint32),
+                                                       num_nodes=target)
 
-    def set_points(self, transformed_points):
+        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle', new_triangles)])
+        return self.from_mesh(new_mesh, self.id, self.dev)
+
+    def set_points(self, transformed_points, reset_com=False):
         """
-        The method for changing the points of the mesh. It ensures that the information of the mesh instance remains
-        consistent, i.e. the same points are saved in both point fields (points, tensor_points).  The cells (triangles)
-        remain unchanged.
+        The method for changing the points of the mesh. The cells (triangles) remain unchanged.
 
         :param transformed_points: The new coordinates of the points. The shape of the
-        np.ndarray has to be (num_points, 3)
-        :type transformed_points: np.ndarray
+        Torch tensor has to be (num_points, 3).
+        :type transformed_points: torch.Tensor
+        :param reset_com: Boolean value that specifies whether the center of mass of the mesh should be recalculated.
+        :type reset_com: bool
         """
-        # transformed_points: numpy_array
-        self.tensor_points = torch.tensor(transformed_points)
-        self.points = transformed_points
+        # transformed_points: Torch tensor
+        self.tensor_points = transformed_points
+        if reset_com:
+            self.initial_com = self.center_of_mass()
 
-    def apply_transformation(self, transform, save_old=False):
+    def apply_transformation(self, transform: torch.Tensor, save_old: bool = False):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
 
         :param transform: Transformation matrix with shape (4, 4).
-        :type transform: np.ndarray
+        :type transform: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
         only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
         saving the old coordinates.
         :type save_old: bool
         """
-        additional_col = np.ones((self.points.shape[0], 1))
-        extended_points = np.hstack((self.points, additional_col))
+        additional_col = torch.ones((self.tensor_points.size()[0], 1), device=self.tensor_points.device,
+                                    dtype=self.tensor_points.dtype)
+        extended_points = torch.cat((self.tensor_points, additional_col), dim=1)
         transformed_points = extended_points @ transform.T
         transformed_points = transformed_points[:, :3]
         self.set_points(transformed_points)
@@ -151,20 +201,20 @@ class TorchMesh(Mesh):
         """
         Changes the points of the mesh by adding a (3,) translation vector.
 
-        :param translation_parameters: Array with shape (3,) containing the translation parameters.
-        :type translation_parameters: np.ndarray
+        :param translation_parameters: Tensor with shape (3,) containing the translation parameters.
+        :type translation_parameters: torch.Tensor
         """
-        translated_points = self.points + translation_parameters
+        translated_points = self.tensor_points + translation_parameters
         self.set_points(translated_points)
 
     def apply_rotation(self, rotation_parameters, save_old=False):
         """
         Rotates the mesh instance using given Euler angles (ZYX convention).
 
-        :param rotation_parameters: Array with shape (3,) containing the Euler angles (in radians).
-        :type rotation_parameters: np.ndarray
+        :param rotation_parameters: Torch tensor with shape (3,) containing the Euler angles (in radians).
+        :type rotation_parameters: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
-        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
+        only relevant if the method is called from a BatchTorchMesh instance. TorchMeshGpu does not offer the option of
         saving the old coordinates.
         :type save_old: bool
         """
@@ -177,19 +227,19 @@ class TorchMesh(Mesh):
         """
         Calculates the centre of mass of the mesh object.
 
-        :return: Coordinates of the centre of mass with shape (3,)
-        :rtype: np.ndarray
+        :return: Coordinates of the centre of mass with shape (3,).
+        :rtype: torch.Tensor
         """
-        return np.sum(self.points, axis=0) / self.num_points
+        return torch.sum(self.tensor_points, dim=0) / self.num_points
 
     def to_pytorch3d_pointclouds(self, batch_size=1):
         """
-        Helper method to translate a given TorchMesh into a pytorch3d.structures.Pointclouds object.
+        Helper method to translate a given TorchMeshGpu into a pytorch3d.structures.Pointclouds object.
         The Pointclouds class provides functions for working with batches of 3d point clouds, and converting between
         representations.
         The generated Pointclouds object represents ‘batch_size’ times the same point cloud, namely the one consisting
-        of the points of the calling TorchMesh instance.
-        :param batch_size: Specifies how often the point cloud of the TorchMesh is repeated in the Pointclouds object.
+        of the points of the calling TorchMeshGpu instance.
+        :param batch_size: Specifies how often the point cloud of the TorchMeshGpu is repeated in the Pointclouds object.
         :type batch_size: int
         :return: Above described Pointclouds object.
         :rtype: pytorch3d.structures.Pointclouds
@@ -206,11 +256,11 @@ class TorchMesh(Mesh):
         edges_a, edges_b = v1 - v0, v2 - v0
         facet_normals = torch.linalg.cross(edges_a, edges_b)
         facet_normals = facet_normals / torch.norm(facet_normals, dim=1, keepdim=True)
-        self.cell_data.update({"facet_normals": facet_normals})
+        self.cell_data.update({"facet_normals": [facet_normals]})
 
 
-class BatchTorchMesh(TorchMesh):
-    def __init__(self, mesh, identifier, batch_size=50, batched_data=False, batched_points=None):
+class BatchTorchMesh(TorchMeshGpu):
+    def __init__(self, mesh, identifier, dev, batch_size=50, batched_data=False, batched_points=None):
         """
         Further extension of the TorchMesh class. Saves 'batch_size' many mesh instances simultaneously.
         However, these meshes differ only in the point coordinates and all have the same triangulation.
@@ -218,40 +268,42 @@ class BatchTorchMesh(TorchMesh):
         replicated accordingly, or a batch of point coordinates.
 
         :param mesh: TorchMesh instance, which serves as the basis. The triangle data is transferred from it.
-        :type mesh: TorchMesh
+        :type mesh: TorchMeshGpu
         :param identifier: Identification string.
         :type identifier: str
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
         :param batch_size: Self-explanatory.
         :type batch_size: int
         :param batched_data: Boolean variable that specifies whether the BatchTorchMesh is initialized with a batch of
         point coordinates.
         :type batched_data: bool
-        :param batched_points: 3-dimensional array with shape (num_points, dimensionality, batch_size) with the batched
+        :param batched_points: 3-dimensional tensor with shape (num_points, dimensionality, batch_size) with the batched
         point coordinates.
-        :type batched_points: np.ndarray
+        :type batched_points: torch.Tensor
         """
         # possibly prone to errors
-        super().__init__(mesh, identifier)
+        super().__init__(mesh, identifier, dev)
         if not batched_data:
             self.tensor_points = self.tensor_points.unsqueeze(2).repeat(1, 1, batch_size)
-            self.points = np.repeat(self.points[:, :, np.newaxis], batch_size, axis=2)
             self.batch_size = batch_size
         else:
-            self.tensor_points = torch.tensor(batched_points)
-            self.points = batched_points
-            self.batch_size = self.points.shape[2]
+            self.tensor_points = batched_points
+            self.tensor_points.to(self.dev)
+            self.batch_size = self.tensor_points.size()[2]
         self.old_points = None
         self.initial_com = self.center_of_mass()
 
     @classmethod
-    def from_mesh(cls, mesh, identifier, batch_size=100):
+    def from_mesh(cls, mesh, identifier, dev, batch_size=500):
         """
         Redundant method.
         :param mesh:
         :param identifier:
+        :param batch_size:
         :return:
         """
-        return cls(mesh, identifier, batch_size=batch_size)
+        return cls(mesh, identifier, dev, batch_size=batch_size)
 
     def simplify_qem(self, target=1000):
         """
@@ -259,47 +311,50 @@ class BatchTorchMesh(TorchMesh):
 
         :param target:
         """
-        warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
+        warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
+                      UserWarning)
 
-    def set_points(self, transformed_points, save_old=False):
+    def set_points(self, transformed_points, save_old=False, reset_com=False):
         """
-        The method for changing the points of the mesh. It ensures that the information of the mesh instance remains
-        consistent, i.e. the same points are saved in both point fields (points, tensor_points).  The cells (triangles)
-        remain unchanged.
+        The method for changing the points of the mesh. The cells (triangles) remain unchanged.
 
-        :param transformed_points: The new coordinates of the points. The shape of the
-        np.ndarray has to be (num_points, 3, batch_size)
-        :type transformed_points: np.ndarray
+        :param transformed_points: The new coordinates of the points. The shape of the Torch tensor has to be
+        (num_points, 3, batch_size).
+        :type transformed_points: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
         :type save_old: bool
+        :param reset_com: Boolean value that specifies whether the center of mass of the mesh should be recalculated.
+        :type reset_com: bool
         """
-        # transformed_points: numpy_array
+        # transformed_points: Torch tensor
         if save_old:
-            self.old_points = self.tensor_points
+            self.old_points = self.tensor_points.clone()
         else:
             self.old_points = None
-        self.tensor_points = torch.tensor(transformed_points)
-        self.points = transformed_points
+        self.tensor_points = transformed_points
+        if reset_com:
+            self.initial_com = self.center_of_mass()
 
     def apply_transformation(self, transform, save_old=False):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
         A separate transformation matrix must be provided for each element of the batch.
         Bear this in mind if the same transformation is to be applied to all elements of the batch by extending the
-        'transform' array accordingly, e.g., by using np.newaxis.
+        'transform' array accordingly.
 
         :param transform: Transformation matrix with shape (4, 4, batch_size).
-        :type transform: np.ndarray
+        :type transform: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
         :type save_old: bool
         """
-        # points_to_transform = self.points[:, :, 0]
-        additional_cols = np.ones((self.points.shape[0], 1, self.points.shape[2]))
-        extended_points = np.concatenate((self.points, additional_cols), axis=1)
-        transformed_points = np.einsum('ijk,ljk->lik', transform, extended_points)
+        additional_cols = torch.ones((self.tensor_points.size()[0], 1, self.tensor_points.size()[2]),
+                                     device=self.tensor_points.device)
+        extended_points = torch.cat((self.tensor_points, additional_cols), dim=1)
+        transformed_points = torch.einsum('ijk,ljk->lik', transform, extended_points)
         transformed_points = transformed_points[:, :3, :]
+
         if save_old:
-            self.old_points = self.tensor_points
+            self.old_points = self.tensor_points.clone()
         else:
             self.old_points = None
         self.set_points(transformed_points, save_old)
@@ -309,14 +364,14 @@ class BatchTorchMesh(TorchMesh):
         Changes the points of the mesh by adding a (3,) translation vector.
         A separate translation vector must be provided for each element of the batch.
         Bear this in mind if the same translation is to be applied to all elements of the batch by extending the
-        'translation_parameters' array accordingly, e.g., by using np.newaxis.
+        'translation_parameters' array accordingly.
 
-        :param translation_parameters: Array with shape (3, batch_size) containing the translation parameters.
-        :type translation_parameters: np.ndarray
+        :param translation_parameters: Torch tensor with shape (3, batch_size) containing the translation parameters.
+        :type translation_parameters: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved.
         :type save_old: bool
         """
-        translated_points = self.points + translation_parameters
+        translated_points = self.tensor_points + translation_parameters
         if save_old:
             self.old_points = self.tensor_points
         else:
@@ -333,7 +388,6 @@ class BatchTorchMesh(TorchMesh):
         """
         self.tensor_points = torch.where(decider.unsqueeze(0).unsqueeze(1), self.tensor_points,
                                          self.old_points)
-        self.points = self.tensor_points.numpy()
         self.old_points = None
 
     def to_pytorch3d_meshes(self):
@@ -348,8 +402,7 @@ class BatchTorchMesh(TorchMesh):
         :rtype: pytorch3d.structures.Meshes
         """
         verts = torch.permute(self.tensor_points, (2, 0, 1))
-        tensor_cells = torch.tensor(self.cells_dict['triangle'])
-        faces = tensor_cells.unsqueeze(0).repeat(self.batch_size, 1, 1)
+        faces = self.cells[0].data.unsqueeze(0).repeat(self.batch_size, 1, 1)
         return pytorch3d.structures.Meshes(verts, faces)
 
     def calc_facet_normals(self):
@@ -357,11 +410,13 @@ class BatchTorchMesh(TorchMesh):
         This method should not be used for BatchTorchMesh instances. The normal vectors are different for all elements
         of the batch.
         """
-        warnings.warn("Warning: TorchMesh method invoked from BatchTorchMesh instance. No action taken.", UserWarning)
+        warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
+                      UserWarning)
 
 
 # The following methods create an artificial partial target from a full mesh by removing points above a defined plane
 # from the mesh.
+
 
 def create_artificial_partial_target(full_target):
     """
@@ -369,61 +424,66 @@ def create_artificial_partial_target(full_target):
     The points defining the plane were determined by hand and are based on empirical values for the specific femur case.
 
     :param full_target: Original complete mesh instance.
-    :type full_target: TorchMesh
+    :type full_target: TorchMeshGpu
     :return: Artificial partial target.
-    :rtype: TorchMesh
+    :rtype: TorchMeshGpu
     """
-    p1, p2, p3 = np.array([0.0, 1.0, 100.0]), np.array([1.0, 0.0, 100.0]), np.array([0.0, 0.0, 100.0])
+    p1, p2, p3 = torch.tensor([0.0, 1.0, 100.0], device=full_target.dev), \
+        torch.tensor([1.0, 0.0, 100.0], device=full_target.dev), torch.tensor([0.0, 0.0, 100.0], device=full_target.dev)
+
     normal, d = define_plane_from_points(p1, p2, p3)
-    filtered_points, removed_indices = remove_points_above_plane(full_target.points, normal, d)
+
+    filtered_points, removed_indices = remove_points_above_plane(full_target.tensor_points, normal, d)
     filtered_cells = remove_triangles_with_removed_points(full_target.cells[0].data, removed_indices)
     filtered_cells = update_triangle_indices(full_target.cells[0].data, filtered_cells, removed_indices)
-    cell_block = meshio.CellBlock('triangle', filtered_cells)
-    return TorchMesh(Mesh(filtered_points, [cell_block]), 'target')
+
+    cell_block = meshio.CellBlock('triangle', filtered_cells.cpu())
+
+    return TorchMeshGpu(Mesh(filtered_points.cpu(), [cell_block]), 'target', full_target.dev)
 
 
 def define_plane_from_points(p1, p2, p3):
     """
     Defines a plane consisting of three points.
 
-    :param p1: First point on the plane (np.ndarray of shape (3,)).
-    :type p1: np.ndarray
-    :param p2: Second point on the plane (np.ndarray of shape (3,)).
-    :type p2: np.ndarray
-    :param p3: Third point on the plane (np.ndarray of shape (3,)).
-    :type p3: np.ndarray
+    :param p1: First point on the plane (torch.Tensor of shape (3,)).
+    :type p1: torch.Tensor
+    :param p2: Second point on the plane (torch.Tensor of shape (3,)).
+    :type p2: torch.Tensor
+    :param p3: Third point on the plane (torch.Tensor of shape (3,)).
+    :type p3: torch.Tensor
     :return: Tuple with two elements:
-        - np.ndarray: Normal vector of the plane with shape (3,).
+        - torch.Tensor: Normal vector of the plane with shape (3,).
         - float: Constant d in the plane equation.
     """
     v1 = p2 - p1
     v2 = p3 - p1
 
-    normal = np.cross(v1, v2)
-    d = -np.dot(normal, p1)
+    normal = torch.linalg.cross(v1, v2)
+    d = -torch.dot(normal, p1)
 
-    return normal, d
+    return normal, d.item()  # .item() to convert single-element tensor to float
 
 
 def remove_points_above_plane(points, normal, d):
     """
     Removes all points from the array that lie above the defined plane.
 
-    :param points: Numpy array of points with shape (num_points, 3).
-    :type points: np.ndarray
+    :param points: Torch tensor of points with shape (num_points, 3).
+    :type points: torch.Tensor
     :param normal: Normal vector of the plane with shape (3,).
-    :type normal: np.ndarray
+    :type normal: torch.Tensor
     :param d: Constant d in the plane equation.
     :type d: float
     :return: Tuple with two elements:
-        - np.ndarray: Filtered array of points that are not above the plane with shape (num_filtered_points, 3)
-        - np.ndarray: Indices of the removed points (in the 'points' array) with shape (num_removed_points,).
+        - torch.Tensor: Filtered tensor of points that are not above the plane with shape (num_filtered_points, 3).
+        - torch.Tensor: Indices of the removed points (in the 'points' array) with shape (num_removed_points,).
     """
-    distances = np.dot(points, normal) + d
+    distances = torch.matmul(points, normal) + d
     mask = distances <= 0
 
     filtered_points = points[mask]
-    removed_indices = np.where(~mask)[0]
+    removed_indices = torch.where(~mask)[0]
 
     return filtered_points, removed_indices
 
@@ -432,15 +492,15 @@ def remove_triangles_with_removed_points(triangles, removed_indices):
     """
     Removes all triangles that contain at least one removed point.
 
-    :param triangles: Numpy array of triangles with shape (num_triangles, 3).
-    :type triangles: np.ndarray
+    :param triangles: Torch tensor of triangles with shape (num_triangles, 3).
+    :type triangles: torch.Tensor
     :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: np.ndarray
-    :return: Filtered array of triangles that do not contain any removed points with shape (num_filtered_triangles, 3).
-    :rtype: np.ndarray
+    :type removed_indices: torch.Tensor
+    :return: Filtered tensor of triangles that do not contain any removed points with shape (num_filtered_triangles, 3).
+    :rtype: torch.Tensor
     """
-    removed_indices_set = set(removed_indices)
-    mask = np.array([not any(vertex in removed_indices_set for vertex in triangle) for triangle in triangles])
+    mask = torch.tensor([not any(vertex in removed_indices for vertex in triangle) for triangle in triangles],
+                        device=triangles.device)
 
     filtered_triangles = triangles[mask]
 
@@ -451,24 +511,26 @@ def update_triangle_indices(triangles, filtered_triangles, removed_indices):
     """
     Updates the triangle data after points have been removed.
 
-    :param triangles: Numpy array of original triangles (num_triangles, 3).
-    :type triangles: np.ndarray
-    :param filtered_triangles: Filtered numpy array of triangles with shape (num_filtered_triangles, 3).
-    :type filtered_triangles: np.ndarray
+    :param triangles: Torch tensor of original triangles (num_triangles, 3).
+    :type triangles: torch.Tensor
+    :param filtered_triangles: Filtered torch tensor of triangles with shape (num_filtered_triangles, 3).
+    :type filtered_triangles: torch.Tensor
     :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: np.ndarray
+    :type removed_indices: torch.Tensor
     :return: Updated triangle data with shape (num_filtered_triangles, 3).
-    :rtype: np.ndarray
+    :rtype: torch.Tensor
     """
-    index_mapping = np.zeros(np.max(triangles) + 1, dtype=int)
+    max_index = torch.max(triangles) + 1
+    index_mapping = torch.zeros(max_index, dtype=torch.int64, device=triangles.device)
     index_mapping[removed_indices] = -1
-    current_index = 0
 
+    current_index = 0
     for i in range(len(index_mapping)):
         if index_mapping[i] != -1:
             index_mapping[i] = current_index
             current_index += 1
 
-    updated_triangles = np.array([[index_mapping[vertex] for vertex in triangle] for triangle in filtered_triangles])
+    updated_triangles = torch.tensor(
+        [[index_mapping[vertex] for vertex in triangle] for triangle in filtered_triangles], device=triangles.device)
 
     return updated_triangles

@@ -11,37 +11,39 @@ def extract_points(meshes):
     Creates a large data matrix with all mesh points from a list of meshio.Mesh objects.
 
     :param meshes: List with the meshes. It is assumed that these meshes are in correspondence.
-    :type meshes: list of meshio.Mesh
+    :type meshes: list of TorchMeshGpu
     :return: Data matrix with shape (3 * num_points, num_meshes).
-    :rtype: np.ndarray
+    :rtype: torch.Tensor
     """
     for index, mesh in enumerate(meshes):
         if index == 0:
-            stacked_points = mesh.points.ravel()
+            stacked_points = mesh.tensor_points.flatten()
         else:
-            stacked_points = np.column_stack((stacked_points, mesh.points.ravel()))
+            stacked_points = torch.column_stack((stacked_points, mesh.tensor_points.flatten()))
+
     return stacked_points
 
 
 def apply_svd(centered_points, num_components):
     """
-    Applies SVD (singular value decomposition) to a centred data matrix and returns the first ‘num_components’
-    eigenvector / eigenvalue pairs to create a point distribution model (PDM). For more information on the relationship
+    Applies SVD (singular value decomposition) to a centered data matrix and returns the first 'num_components'
+    eigenvector/eigenvalue pairs to create a point distribution model (PDM). For more information on the relationship
     between PCA and SVD see:
     https://stats.stackexchange.com/questions/134282/relationship-between-svd-and-pca-how-to-use-svd-to-perform-pca
 
-    :param centered_points: Centred data matrix with shape (num_points, num_samples).
-    :type centered_points: np.ndarray
-    :param num_components: Indicates how many eigenvector / eigenvalue are considered (rank of the model).
+    :param centered_points: Centered data matrix with shape (num_points, num_samples).
+    :type centered_points: torch.Tensor
+    :param num_components: Indicates how many eigenvector/eigenvalue pairs are considered (rank of the model).
     :type num_components: int
     :return: Tuple with two elements:
-        - np.ndarray: The first ‘num_components’ eigenvalues in descending order with shape (num_components,).
-        - np.ndarray: The corresponding first ‘num_components’ eigenvectors with shape (num_points, num_components).
+        - torch.Tensor: The first 'num_components' eigenvalues in descending order with shape (num_components,).
+        - torch.Tensor: The corresponding first 'num_components' eigenvectors with shape (num_points, num_components).
     """
-    _, s, V_T = np.linalg.svd(np.transpose(centered_points), full_matrices=False)
-    # The rows of V_T are the eigenvector of the covariance matrix. The singular values are related to the eigenvalues
-    # of the covariance matrix via $\lambda_i = s_i^2/(n-1)$.
-    return (np.square(s) / (num_components - 1))[:num_components], np.transpose(V_T)[:, :num_components]
+    # Perform SVD using PyTorch
+    U, s, V_T = torch.svd(centered_points.t(), some=True)
+    eigenvalues = (s ** 2) / (num_components - 1)
+
+    return eigenvalues[:num_components], V_T[:, :num_components]
 
 
 def get_parameters(stacked_points, components):
@@ -50,15 +52,14 @@ def get_parameters(stacked_points, components):
     a least squares problem.
 
     :param stacked_points: Batch with given mesh points with shape (3 * num_points, batch_size).
-    :type stacked_points: np.ndarray
+    :type stacked_points: torch.Tensor
     :param components: Eigenvectors of the model multiplied by the square root of the respective eigenvalue with shape
     (3 * num_points, model_rank).
-    :type components: np.ndarray
+    :type components: torch.Tensor
     :return: Calculated model parameters with shape (model_rank, batch_size).
-    :rtype: np.ndarray
+    :rtype: torch.Tensor
     """
-    parameters, residuals, rank, s = np.linalg.lstsq(components, stacked_points, rcond=None)
-    return parameters
+    return torch.linalg.lstsq(components, stacked_points).solution
 
 
 def gaussian_pdf(x, mean=0.0, sigma=1.0):
@@ -175,8 +176,8 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
 
 
 class PointDistributionModel:
-    def __init__(self, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None,
-                 rank=None):
+    def __init__(self, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None, rank=None,
+                 dev=None):
         """
         Class that defines and creates a point distribution model (PDM).
         This can be done in three different ways: It can be imported from a .h5 file, a complete set of mean vector and
@@ -191,15 +192,18 @@ class PointDistributionModel:
         :param meshes: List of meshes from which the PDM is to be calculated.
         :type meshes: list
         :param mean: Mean vector with shape (3 * num_points, 1).
-        :type mean: np.ndarray
+        :type mean: torch.Tensor
         :param cov: Full covariance matrix with shape (3 * num_points, 3 * num_points).
-        :type cov: np.ndarray
+        :type cov: torch.Tensor
         :param model: Read-in PDM in the form of a Python dictionary. To get this dictionary, use
         'src/custom_io/H5ModelIO.py'.
         :type model: dict
         :param rank: Specifies how many main components are to be taken into account. Must only be specified
         explicitly in the case of ‘mean_and_cov=True’.
         :type rank: int
+        :param dev: An object representing the device on which the tensor operations are or will be allocated. Must only
+        be specified explicitly in the case of ‘read_in=True’.
+        :type dev: torch.device
         """
         self.read_in = read_in
         self.mean_and_cov = mean_and_cov
@@ -208,13 +212,13 @@ class PointDistributionModel:
             self.stacked_points = None
             # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
             # did not work. Why?
-            self.mean = (model.get('points').reshape(-1, order='F'))[:, np.newaxis]
+            self.mean = torch.tensor((model.get('points').reshape(-1, order='F'))[:, np.newaxis], device=dev)
             self.points_centered = None
             self.num_points = int(self.mean.shape[0] / 3)
             self.rank = model.get('basis').shape[1]
-            self.eigenvalues = model.get('var')
-            self.eigenvectors = model.get('basis')
-            self.components = self.eigenvectors * model.get('std')
+            self.eigenvalues = torch.tensor(model.get('var'), device=dev)
+            self.eigenvectors = torch.tensor(model.get('basis'), device=dev)
+            self.components = self.eigenvectors * torch.tensor(model.get('std'), device=dev)
             self.parameters = None
             self.decimated = False
         elif self.mean_and_cov:
@@ -225,23 +229,23 @@ class PointDistributionModel:
             self.num_points = int(self.mean.shape[0] / 3)
             self.rank = rank
             eigenvalues, self.eigenvectors = apply_svd(cov, self.rank)
-            self.eigenvalues = np.sqrt((self.rank - 1) * eigenvalues)
-            self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
+            self.eigenvalues = torch.sqrt((self.rank - 1) * eigenvalues)
+            self.components = self.eigenvectors * torch.sqrt(self.eigenvalues)
             self.parameters = None
             self.decimated = False
         else:
             self.meshes = meshes
             self.stacked_points = extract_points(self.meshes)
-            self.mean = np.mean(self.stacked_points, axis=1)[:, np.newaxis]
+            self.mean = torch.mean(self.stacked_points, dim=1)[:, None]
             self.points_centered = self.stacked_points - self.mean
             # Avoid explicit representation of the covariance matrix
             # self.covariance = np.cov(self.stacked_points)
             # Dimensionality of 3 hardcoded here!
-            self.num_points = int(self.stacked_points.shape[0] / 3)
-            self.rank = self.stacked_points.shape[1]
+            self.num_points = int(self.stacked_points.size()[0] / 3)
+            self.rank = self.stacked_points.size()[1]
             # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
             self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.rank)
-            self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
+            self.components = self.eigenvectors * torch.sqrt(self.eigenvalues)
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
             self.parameters = get_parameters(self.points_centered, self.components)
             self.decimated = False
@@ -250,8 +254,8 @@ class PointDistributionModel:
         """
         Returns all ('rank' many) eigenvalues of the PDM in descending order.
 
-        :return: Numpy array with the eigenvalues in descending order with shape (rank,).
-        :rtype: np.ndarray
+        :return: Torch tensor with the eigenvalues in descending order with shape (rank,).
+        :rtype: torch.Tensor
         """
         return self.eigenvalues
 
@@ -262,7 +266,7 @@ class PointDistributionModel:
         :param k: Specifies which eigenvalue is to be returned.
         :type k: int
         :return: The kth largest eigenvalue.
-        :rtype: float
+        :rtype: torch.Tensor
         """
         return self.eigenvalues[k]
 
@@ -272,7 +276,7 @@ class PointDistributionModel:
         eigenvalue times the kth eigenvector.
 
         :return: All ('rank' many) components of the PDM with shape (3 * num_points, rank).
-        :rtype: np.ndarray
+        :rtype: torch.Tensor
         """
         return self.components
 
@@ -284,7 +288,7 @@ class PointDistributionModel:
         :param k: Specifies which component is to be returned.
         :type k: int
         :return: The kth component of the PDM with shape (3 * num_points,).
-        :rtype: np.ndarray
+        :rtype: torch.Tensor
         """
         return self.components[:, k]
 
@@ -295,14 +299,17 @@ class PointDistributionModel:
 
         :param parameters: Model parameters for which the point coordinates of the associated instance are to be
         calculated, either of shape (rank,) or (rank, batch_size).
-        :type parameters: np.ndarray
+        :type parameters: torch.Tensor
         :return: Calculated point coordinates, either of shape (num_points, 3) or (num_points, 3, batch_size).
-        :rtype: np.ndarray
+        :rtype: torch.Tensor
         """
         if parameters.ndim == 1:
-            parameters = parameters[:, np.newaxis]
-        batch_size = parameters.shape[1]
+            parameters = parameters.unsqueeze(1)  # Equivalent to parameters[:, np.newaxis] in NumPy
+
+        batch_size = parameters.size()[1]
+
         stacked_points = self.components @ parameters + self.mean
+
         if batch_size == 1:
             return stacked_points.reshape((-1, 3))
         else:
@@ -317,7 +324,7 @@ class PointDistributionModel:
         :type decimation_target: int
         :return: The first mesh is reduced to the number of target points using QEM, then the PDM is defined at these
         points using interpolation (radial basis functions). This mesh instance is returned.
-        :rtype: TorchMesh
+        :rtype: TorchMeshGpu
         """
         reference_decimated = self.meshes[0]
         if self.read_in or self.mean_and_cov:
@@ -337,17 +344,17 @@ class PointDistributionModel:
 
         reference_decimated = self.meshes[0].simplify_qem(decimation_target)
         mean_fun, cov_fun = self.pdm_to_interpolated_gp(decimation_target)
-        mean, cov = mean_fun(reference_decimated.points), cov_fun(reference_decimated.points,
-                                                                       reference_decimated.points)
+        mean, cov = mean_fun(reference_decimated.tensor_points), cov_fun(reference_decimated.tensor_points,
+                                                                         reference_decimated.tensor_points)
         self.mean = mean.reshape((-1, 1))
         eigenvalues, eigenvectors = apply_svd(cov, self.rank)
-        self.eigenvalues = np.sqrt(eigenvalues[:self.rank] * (self.rank - 1))
+        self.eigenvalues = torch.sqrt(eigenvalues[:self.rank] * (self.rank - 1))
         self.eigenvectors = eigenvectors[:, :self.rank]
         self.meshes = None
         self.stacked_points = None
         self.points_centered = None
         self.num_points = reference_decimated.num_points
-        self.components = self.eigenvectors * np.sqrt(self.eigenvalues)
+        self.components = self.eigenvectors * torch.sqrt(self.eigenvalues)
         self.parameters = None
         self.decimated = True
 
@@ -358,28 +365,36 @@ class PointDistributionModel:
         Extends the PDM, which is only defined at a finite number of points, to an infinite domain. This then
         corresponds to a Gaussian process (GP). The values of the deformation field between the defined points are
         interpolated using a radial basis functions (RBF) interpolator.
+        Remark: The SciPy RBF interpolators converts Torch tensors internally to Numpy arrays. This is
+        disadvantageous for the runtime. Each call of the mean or covariance function generates therefore a lot of
+        traffic between the CPU and GPU when the rest of the code is running on the GPU. CuPy, for example, can be tried
+        out later to optimise the code (needs Python 3.9 or later versions).
 
         :param decimation_target: Number of target points that the reduced PDM should have.
         :type decimation_target: int
         :return: A tuple containing two functions.
             - The first function is the mean function of the GP.
             - The second function is the covariance function of the GP.
-        :rtype: Tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray, np.ndarray], np.ndarray]]
+        :rtype: Tuple[Callable[[torch.Tensor], torch.Tensor], Callable[[torch.Tensor, torch.Tensor], torch.Tensor]]
         """
         mean_reshaped = self.mean.reshape((-1, 3))
         eigenvectors_reshaped = self.eigenvectors.reshape((self.num_points, 3, self.rank))
-        eigenvector_interpolators = [RBFInterpolator(mean_reshaped, eigenvectors_reshaped[:, :, i]) for i in
+        # SciPy accepts Torch tensors, but converts them internally into NumPy arrays. The tensors must therefore be
+        # located on the CPU.
+        eigenvector_interpolators = [RBFInterpolator(mean_reshaped.cpu(), eigenvectors_reshaped[:, :, i].cpu()) for i in
                                      range(self.rank)]
+
         def mean(x):
             """
             Evaluates the mean function at a given set of points x.
 
             :param x: Points at which the covariance function is to be analysed with shape (num_points, 3).
-            :type x: np.ndarray
+            :type x: torch.Tensor
             :return: Mean function evaluated at all the points in x with shape (num_points, 3).
-            :rtype: np.ndarray
+            :rtype: torch.Tensor
             """
-            return RBFInterpolator(mean_reshaped, mean_reshaped)(x)
+            return torch.tensor(RBFInterpolator(mean_reshaped.cpu(), mean_reshaped.cpu())(x.cpu()),
+                                dtype=torch.float32, device=self.mean.device)
 
         def cov(x, y, num_points=decimation_target):
             """
@@ -387,19 +402,24 @@ class PointDistributionModel:
             identical.
 
             :param x: Points at which the covariance function is to be analysed with shape (num_points, 3).
-            :type x: np.ndarray
+            :type x: torch.Tensor
             :param y: Points at which the covariance function is to be analysed with shape (num_points, 3).
-            :type y: np.ndarray
+            :type y: torch.Tensor
             :param num_points: Indicates how many points are present in the sets x, y.
             :type num_points: int
             :return: Full covariance matrix that determines the covariance for each point in x with each point from y
             [shape (3 * num_points, 3 * num_points)].
-            :rtype: np.ndarray
+            :rtype: torch.Tensor
             """
-            x_eigen = np.dstack([interp(x) for interp in eigenvector_interpolators]).reshape((3 * num_points, self.rank))
-            y_eigen = np.dstack([interp(y) for interp in eigenvector_interpolators]).reshape((3 * num_points, self.rank))
+            x_eigen = torch.stack(
+                [torch.tensor(interp(x.cpu()), device=x.device) for interp in eigenvector_interpolators],
+                dim=-1).reshape((3 * num_points, self.rank))
 
-            return (x_eigen * self.eigenvalues) @ np.transpose(y_eigen)
+            y_eigen = torch.stack(
+                [torch.tensor(interp(y.cpu()), device=y.device) for interp in eigenvector_interpolators],
+                dim=-1).reshape((3 * num_points, self.rank))
+
+            return ((x_eigen * self.eigenvalues) @ y_eigen.t()).float()
 
         return mean, cov
 
@@ -409,14 +429,9 @@ class PointDistributionModel:
         covariance matrix is not permanently stored.
 
         :return: Full covariance matrix with shape (3 * num_points, 3 * num_points).
-        :rtype: np.ndarray
+        :rtype: torch.Tensor
         """
         if not self.read_in and not self.mean_and_cov and not self.decimated:
-            return np.cov(self.stacked_points)
+            return torch.cov(self.stacked_points)
         else:
-            return self.eigenvectors @ (np.diag(self.eigenvalues) @ np.transpose(self.eigenvectors))
-
-
-
-
-
+            return self.eigenvectors @ (torch.diag(self.eigenvalues) @ self.eigenvectors.t())
