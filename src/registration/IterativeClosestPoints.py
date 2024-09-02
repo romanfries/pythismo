@@ -1,6 +1,5 @@
-import numpy as np
+import pytorch3d
 import torch
-import trimesh.registration
 
 
 def extract_reference(meshes, identifier):
@@ -85,10 +84,11 @@ class ICPAnalyser:
         Method that must be called in order to actually execute the alignment step. After the call, ‘meshes’ contains
         the transformed meshes.
         """
-        reference_points = np.asanyarray(self.reference.points, dtype=np.float64)
-        if not trimesh.util.is_shape(reference_points, (-1, 3)):
-            raise ValueError("Invalid point shape.")
-        for i, mesh in enumerate(self.meshes):
-            _, transformed_points, _ = trimesh.registration.icp(mesh.points, self.reference.points,
-                                                                max_iterations=self.iterations)
-            mesh.set_points(transformed_points, reset_com=True)
+        reference_points = self.reference.tensor_points
+        mesh_points_list = [mesh.tensor_points for mesh in self.meshes]
+        mesh_points = torch.stack(mesh_points_list)
+        reference_points = reference_points.unsqueeze(0).repeat(mesh_points.size()[0], 1, 1)
+        icp_solution = pytorch3d.ops.iterative_closest_point(mesh_points, reference_points,
+                                                             max_iterations=self.iterations)
+        transformed_points = icp_solution.Xt
+        _ = list(map(lambda x, y: x.set_points(y, reset_com=True), self.meshes, transformed_points))
