@@ -41,7 +41,7 @@ class ModelReader:
                 self.model = load_model_h5(file)
 
     def get_model(self, dev):
-        return PointDistributionModel(meshes=None, read_in=True, model=self.model, dev=dev)
+        return PointDistributionModel(read_in=True, model=self.model, dev=dev)
 
 
 

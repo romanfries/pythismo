@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
 
-from src.mesh.TMesh import TorchMeshIOService
+import meshio
+
+from src.mesh.TMesh import TorchMeshGpu
 
 
-def read_and_simplify_meshes(read_path, write_path, target=200):
+def read_and_simplify_meshes(read_path, write_path, dev, target=200):
     rel_read_path = Path(read_path)
     rel_write_path = Path(write_path)
     read_path = Path.cwd().parent / rel_read_path
@@ -15,7 +17,7 @@ def read_and_simplify_meshes(read_path, write_path, target=200):
         if file.suffix == '.stl' or file.suffix == '.ply':
             mesh_read_io = MeshReaderWriter(file)
             mesh_write_io = MeshReaderWriter(write_path / file.name)
-            mesh = mesh_read_io.read_mesh()
+            mesh = mesh_read_io.read_mesh(dev)
             meshes.append(mesh)
             simplified_mesh = mesh.simplify_qem(target)
             mesh_write_io.write_mesh(simplified_mesh)
@@ -27,12 +29,14 @@ def read_meshes(relative_path, dev):
     relative_path = Path(relative_path)
     mesh_path = Path.cwd().parent / relative_path
     meshes = []
+    meshes_io = []
     for file in mesh_path.iterdir():
         if file.suffix == '.stl' or file.suffix == '.ply':
             mesh_io = MeshReaderWriter(file)
             mesh = mesh_io.read_mesh(dev)
             meshes.append(mesh)
-    return meshes
+            meshes_io.append(mesh_io)
+    return meshes, meshes_io
 
 
 def read_landmarks_with_reference(reference_path, landmark_path):
@@ -63,14 +67,14 @@ class MeshReaderWriter:
     def __init__(self, file):
         self.file = Path(file).resolve()
         self.name = self.file.stem
-        self.service = TorchMeshIOService()
 
     def read_mesh(self, dev):
-        mesh = self.service.read_mesh(self.file, self.name, dev)
-        return mesh
+        mesh = meshio.read(self.file)
+        torch_mesh = TorchMeshGpu.from_mesh(mesh, self.name, dev)
+        return torch_mesh
 
     def write_mesh(self, mesh):
         write_path = self.file.parent
         write_path.mkdir(parents=True, exist_ok=True)
         file_path = write_path / mesh.id
-        self.service.write_mesh(mesh, file_path.with_suffix('.stl'))
+        meshio.write(file_path.with_suffix('.stl'), mesh)

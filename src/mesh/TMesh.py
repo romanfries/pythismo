@@ -43,20 +43,6 @@ def get_transformation_matrix(angles: torch.Tensor) -> torch.Tensor:
     return transformation_matrices
 
 
-class TorchMeshIOService:
-    def __init__(self, reader=meshio.read, writer=meshio.write):
-        self.reader = reader
-        self.writer = writer
-
-    def read_mesh(self, file_path, identifier, dev):
-        mesh = self.reader(file_path)
-        torch_mesh = TorchMeshGpu.from_mesh(mesh, identifier, dev)
-        return torch_mesh
-
-    def write_mesh(self, torch_mesh, file_path):
-        self.writer(file_path, torch_mesh)
-
-
 class TorchMeshGpu(Mesh):
     def __init__(self, mesh, identifier, dev):
         """
@@ -79,7 +65,8 @@ class TorchMeshGpu(Mesh):
         args = list(arg_dict.values())
         super().__init__(*args)
         self.dev = dev
-        # If the condition is met, the constructor was called from the ‘BatchTorchMesh’ subclass.
+        # If the condition is met, the constructor was called from the ‘BatchTorchMesh’ subclass. Therefore, the warning
+        # can be ignored.
         if isinstance(self.points, np.ndarray) and np.array_equal(self.points, np.array(None, dtype=object)):
             self.tensor_points = mesh.tensor_points
         else:

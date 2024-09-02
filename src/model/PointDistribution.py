@@ -15,6 +15,7 @@ def extract_points(meshes):
     :return: Data matrix with shape (3 * num_points, num_meshes).
     :rtype: torch.Tensor
     """
+    stacked_points = torch.tensor([], device=meshes[0].dev)
     for index, mesh in enumerate(meshes):
         if index == 0:
             stacked_points = mesh.tensor_points.flatten()

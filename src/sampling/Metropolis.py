@@ -92,8 +92,8 @@ class PDMMetropolisSampler:
         self.old_posterior = None
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL)
-        self.accepted = 0
-        self.rejected = 0
+        self.accepted_par = self.accepted_trans = self.accepted_rot = 0
+        self.rejected_par = self.rejected_trans = self.rejected_rot = 0
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -180,14 +180,16 @@ class PDMMetropolisSampler:
 
         self.posterior = posterior
 
-    def decide(self):
+    def decide(self, parameter_proposal_type: ParameterProposalType):
         """
         Implements the second and third step of the Metropolis algorithm (according to the lecture notes of the course
         "Statistical Shape Modelling" by Marcel Lüthi). Calculates the ratio of the unnormalised posterior values of the
         new and old samples. Decides which samples should form the current state based on the rules of the Metropolis
         algorithm. Parameter values (GaussianRandomWalkProposal) and mesh points (BatchMesh) are updated accordingly.
 
-        :return:
+        :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) were drawn during
+        the current iteration.
+        :type parameter_proposal_type: ParameterProposalType
         """
         # log-ratio!
         ratio = torch.exp(self.posterior - self.old_posterior)
@@ -200,17 +202,34 @@ class PDMMetropolisSampler:
         self.batch_mesh.update_points(decider)
         self.points = self.batch_mesh.tensor_points
 
-        self.accepted += decider.sum().item()
-        self.rejected += (self.batch_size - decider.sum().item())
+        if parameter_proposal_type == ParameterProposalType.MODEL:
+            self.accepted_par += decider.sum().item()
+            self.rejected_par += (self.batch_size - decider.sum().item())
+        elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
+            self.accepted_trans += decider.sum().item()
+            self.rejected_trans += (self.batch_size - decider.sum().item())
+        else:
+            self.accepted_rot += decider.sum().item()
+            self.rejected_rot += (self.batch_size - decider.sum().item())
 
     def acceptance_ratio(self):
         """
         Returns the ratio of accepted samples to the total number of random parameter draws.
 
-        :return: Percentage of accepted samples.
-        :rtype: float
+        :return: Tuple containing 4 float elements:
+            - Ratio of accepted proposals when the model parameters have been adjusted.
+            - Ratio of accepted proposals when the translation parameters have been adjusted.
+            - Ratio of accepted proposals when the rotation parameters have been adjusted.
+            - Total ratio of accepted proposals.
+        :rtype: tuple
         """
-        return float(self.accepted) / (self.accepted + self.rejected)
+        accepted_tot = self.accepted_par + self.accepted_trans + self.accepted_rot
+        rejected_tot = self.rejected_par + self.rejected_trans + self.rejected_rot
+        ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
+        ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
+        ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
+        ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
+        return ratio_par, ratio_trans, ratio_rot, ratio_tot
 
     def change_device(self, dev):
         """
@@ -227,7 +246,6 @@ class PDMMetropolisSampler:
             self.points = self.batch_mesh.tensor_points
             self.target.change_device(dev)
             self.target_points = self.target.tensor_points
-
 
             self.old_posterior = self.old_posterior.to(dev)
             self.posterior = self.posterior.to(dev)

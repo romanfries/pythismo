@@ -2,12 +2,11 @@ import math
 
 import dash
 import meshio
-import numpy as np
 import torch
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 
-from src.mesh.TMesh import get_transformation_matrix, TorchMeshGpu
+from src.mesh.TMesh import TorchMeshGpu
 
 
 class BatchMeshVisualizer:

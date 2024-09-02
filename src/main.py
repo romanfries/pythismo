@@ -1,8 +1,5 @@
 from pathlib import Path
-
 import os
-
-import numpy as np
 import torch
 
 import custom_io
@@ -19,47 +16,17 @@ from visualization.DashViewer import MainVisualizer
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def run(dev,
-        mesh_path=None,
-        reference_path=None,
-        model_path=None,
-        read_model=False,
-        simplify_model=False):
+def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=False, simplify_model=False):
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     if read_model:
         rel_model_path = Path(model_path)
         model_path = Path.cwd().parent / rel_model_path
         model_reader = ModelReader(model_path)
-        reference = custom_io.read_meshes(reference_path, dev)[0]
+        reference = custom_io.read_meshes(reference_path, dev)[0][0]
         model = model_reader.get_model(dev)
-        # TODO: Think again: Does it make sense to represent the target as a TorchMeshGpu?
-        target = reference.copy()
-        target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
-        target = create_artificial_partial_target(target)
-        reference.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=dev)), reset_com=True)
-        batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
-
-        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev)
-        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev,
-                                             reference, batched_reference, target, model)
-        sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
-        generator = torch.Generator(device=dev)
-        for i in range(1001):
-            random = torch.rand(1, device=dev, generator=generator).item()
-            if random < 0.6:
-                proposal = ParameterProposalType.MODEL
-            elif 0.6 <= random < 0.8:
-                proposal = ParameterProposalType.TRANSLATION
-            else:
-                proposal = ParameterProposalType.ROTATION
-            sampler.propose(proposal)
-            sampler.determine_quality(proposal)
-            sampler.decide()
-
-        return batched_reference, model, sampler
 
     else:
-        meshes = custom_io.read_meshes(mesh_path, dev)
+        meshes, _ = custom_io.read_meshes(mesh_path, dev)
 
         # Currently, already registered meshes are required
         # if not registered:
@@ -93,35 +60,34 @@ def run(dev,
         model = PointDistributionModel(meshes=meshes)
 
         if simplify_model:
-            reference = model.decimate(1000)
+            reference = model.decimate(200)
         else:
             reference = meshes[0]
 
-        # TODO: Think again: Does it make sense to represent the target as a TorchMeshGpu?
-        target = reference.copy()
-        target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
-        target = create_artificial_partial_target(target)
-        reference.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=dev)), reset_com=True)
-        batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
+    target = reference.copy()
+    target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
+    target = create_artificial_partial_target(target)
+    reference.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=dev)), reset_com=True)
+    batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
 
-        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev)
-        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev,
-                                             reference, batched_reference, target, model)
-        sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
-        generator = torch.Generator(device=dev)
-        for i in range(1):
-            random = torch.rand(1, device=dev, generator=generator).item()
-            if random < 0.6:
-                proposal = ParameterProposalType.MODEL
-            elif 0.6 <= random < 0.8:
-                proposal = ParameterProposalType.TRANSLATION
-            else:
-                proposal = ParameterProposalType.ROTATION
-            sampler.propose(proposal)
-            sampler.determine_quality(proposal)
-            sampler.decide()
+    random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev)
+    random_walk_2 = ClosestPointProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev,
+                                         reference, batched_reference, target, model)
+    sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
+    generator = torch.Generator(device=dev)
+    for i in range(1001):
+        random = torch.rand(1, device=dev, generator=generator).item()
+        if random < 0.6:
+            proposal = ParameterProposalType.MODEL
+        elif 0.6 <= random < 0.8:
+            proposal = ParameterProposalType.TRANSLATION
+        else:
+            proposal = ParameterProposalType.ROTATION
+        sampler.propose(proposal)
+        sampler.determine_quality(proposal)
+        sampler.decide(proposal)
 
-        return batched_reference, random_walk_2.posterior_model, sampler
+    return batched_reference, model, sampler
 
 
 class Main:
@@ -133,26 +99,20 @@ if __name__ == "__main__":
     # torch.set_default_tensor_type(torch.cuda.FloatTensor)
     main = Main()
     dev = main.device
-    # batched_reference, model, sampler = run("datasets/femur-data/project-data/registered",
-    #                                         landmark_path="datasets/femur-data/project-data/landmarks",
-    #                                         reference_lm_path="datasets/femur-data/project-data/reference-landmarks",
-    #                                         reference_path="datasets/femur-data/project-data/reference-decimated",
-    #                                         model_path="datasets/models",
-    #                                         read_model=True,
-    #                                         simplify_model=True,
-    #                                         registered=True,
-    #                                         write_meshes=False
-    #                                         )
     batched_reference, model, sampler = run(dev,
                                             "datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=False,
+                                            read_model=True,
                                             simplify_model=False
                                             )
     batched_reference.change_device(torch.device("cpu"))
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
     visualizer = MainVisualizer(batched_reference, model, sampler)
-    print(sampler.acceptance_ratio())
+    acceptance_ratios = sampler.acceptance_ratio()
+    print("Acceptance Ratios:")
+    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
+    for desc, val in zip(strings, acceptance_ratios):
+        print(f"{desc}: {val:.4f}")
     visualizer.run()
