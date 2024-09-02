@@ -65,9 +65,9 @@ class GaussianRandomWalkProposal:
         :type parameter_proposal_type: ParameterProposalType
         """
         if parameter_proposal_type == ParameterProposalType.MODEL:
-            perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.parameters.device)
+            perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
-            perturbations = torch.randn((3, self.batch_size), device=self.translation.device)
+            perturbations = torch.randn((3, self.batch_size), device=self.dev)
 
         self.old_parameters = self.parameters
         self.old_translation = self.translation
@@ -159,10 +159,29 @@ class GaussianRandomWalkProposal:
         self.chain_length_step chain elements.
         """
         updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length +
-                                     self.chain_length_step), device=self.chain.device)
+                                     self.chain_length_step), device=self.dev)
         updated_chain[:, :, :self.chain_length] = self.chain
         updated_posterior = torch.zeros((self.batch_size, self.chain_length +
-                                         self.chain_length_step), device=self.posterior.device)
+                                         self.chain_length_step), device=self.dev)
         updated_posterior[:, :self.chain_length] = self.posterior
         self.chain = updated_chain
         self.posterior = updated_posterior
+
+    def change_device(self, dev):
+        """
+        Change the device on which the tensor operations are or will be allocated. Only execute between completed
+        iterations of the sampling process.
+
+        :param dev: The future device on which the mesh data is to be saved.
+        :type dev: torch.device
+        """
+        if self.dev == dev:
+            return
+        else:
+            self.parameters = self.parameters.to(dev)
+            self.translation = self.translation.to(dev)
+            self.rotation = self.rotation.to(dev)
+            self.chain = self.chain.to(dev)
+            self.posterior = self.posterior.to(dev)
+
+            self.dev = dev

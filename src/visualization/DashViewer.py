@@ -6,7 +6,6 @@ import numpy as np
 import torch
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
-from flask import request
 
 from src.mesh.TMesh import get_transformation_matrix, TorchMeshGpu
 
@@ -19,7 +18,7 @@ class BatchMeshVisualizer:
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [np.min(self.mesh.points), np.max(self.mesh.points)]
+        display_range = [torch.min(self.mesh.tensor_points), torch.max(self.mesh.tensor_points)]
 
         # Define the layout of the Dash app
         layout = html.Div([
@@ -82,12 +81,13 @@ class ModelVisualizer:
         self.app = app
         self.model = model
         self.batched_ref = batched_ref
+        # Make sure all components are on the cpu, i.e., model, proposal, meshes.
         self.num_parameters = self.model.rank + 6
-        self.parameters = np.zeros(self.num_parameters)
+        self.parameters = torch.zeros(self.num_parameters)
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [1.2 * np.min(self.model.mean), 1.2 * np.max(self.model.mean)]
+        display_range = [1.2 * torch.min(self.model.mean), 1.2 * torch.max(self.model.mean)]
         sliders = []
         translation_sliders = []
         rotation_sliders = []
@@ -157,17 +157,17 @@ class ModelVisualizer:
             inputs
         )
         def update_mesh(*parameters):
-            params = np.asarray(parameters)
+            params = torch.tensor(parameters)
             translation = params[-6:-3]
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
-            new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                self.batched_ref.cells[0].data.astype(
-                                                                                    np.int64))])
-            new_torch_mesh = TorchMeshGpu(new_mesh, 'display')
+            new_mesh = meshio.Mesh(points.cpu().numpy(), [meshio.CellBlock('triangle',
+                                                                           self.batched_ref.cells[
+                                                                               0].data.cpu().numpy())])
+            new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
-            x, y, z = np.transpose(new_torch_mesh.points)
+            x, y, z = new_torch_mesh.tensor_points.T
             i, j, k = new_torch_mesh.cells[0].data.T
             mesh_figure = go.Figure(data=[
                 go.Mesh3d(
@@ -200,12 +200,13 @@ class ChainVisualizer:
     def __init__(self, app, sampler):
         self.app = app
         self.sampler = sampler
+        # Make sure all components are on the cpu, i.e., model, proposal, meshes.
         self.num_parameters = self.sampler.model.rank + 6
         self.parameters = self.sampler.proposal.chain
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
-        display_range = [1.2 * np.min(self.sampler.model.mean), 1.2 * np.max(self.sampler.model.mean)]
+        display_range = [1.2 * torch.min(self.sampler.model.mean), 1.2 * torch.max(self.sampler.model.mean)]
         layout = html.Div([
             html.H1("3D Markov Chain Viewer", style={'text-align': 'center'}),
             html.Div([
@@ -243,21 +244,20 @@ class ChainVisualizer:
             prevent_initial_call=True
         )
         def update_display(batch, chain_element):
-            params = np.asarray(self.parameters[:, batch, chain_element])
+            params = torch.tensor(self.parameters[:, batch, chain_element])
             translation = params[-6:-3]
             rotation = params[-3:]
             points = self.sampler.model.get_points_from_parameters(params[:-6])
-            new_mesh = meshio.Mesh(points.astype(np.float32), [meshio.CellBlock('triangle',
-                                                                                self.sampler.batch_mesh.cells[
-                                                                                    0].data.astype(
-                                                                                    np.int64))])
-            new_torch_mesh = TorchMeshGpu(new_mesh, 'display')
+            new_mesh = meshio.Mesh(points.numpy(), [meshio.CellBlock('triangle',
+                                                                     self.sampler.batch_mesh.cells[
+                                                                         0].data.numpy())])
+            new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
-            x, y, z = np.transpose(new_torch_mesh.points)
+            x, y, z = new_torch_mesh.tensor_points.T
             i, j, k = new_torch_mesh.cells[0].data.T
 
-            x_ref, y_ref, z_ref = np.transpose(self.sampler.target_points)
+            x_ref, y_ref, z_ref = self.sampler.target_points.T
             i_ref, j_ref, k_ref = self.sampler.target.cells[0].data.T
 
             mesh_figure = go.Mesh3d(
@@ -301,12 +301,14 @@ class PosteriorVisualizer:
     def __init__(self, app, proposal):
         self.app = app
         self.proposal = proposal
+        self.dev = self.proposal.dev
         self.posterior = proposal.posterior
         self.batch_size = proposal.batch_size
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
         layout = html.Div([
+            html.H1("Trace Plots (Log Density Values)", style={'textAlign': 'center', 'marginTop': '10px'}),
             dcc.Graph(id='density-plot'),
             dcc.Slider(
                 id='slider',
@@ -323,7 +325,7 @@ class PosteriorVisualizer:
             Input('slider', 'value')
         )
         def update_figure(value):
-            x, y = np.arange(0, self.proposal.chain_length, 1), self.posterior[value, :self.proposal.chain_length]
+            x, y = torch.arange(0, self.proposal.chain_length, 1), self.posterior[value, :self.proposal.chain_length]
             figure = {
                 'data': [go.Scatter(x=x, y=y, mode='lines+markers', marker=dict(size=5))],
                 'layout': go.Layout(

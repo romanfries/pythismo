@@ -75,7 +75,7 @@ class TorchMeshGpu(Mesh):
         arg_dict = vars(mesh)
         arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id', 'num_points',
                                                                                  'dimensionality', 'initial_com',
-                                                                                 'dev'}}
+                                                                                 'dev', 'calculated_facet_normals'}}
         args = list(arg_dict.values())
         super().__init__(*args)
         self.dev = dev
@@ -85,11 +85,16 @@ class TorchMeshGpu(Mesh):
         else:
             self.tensor_points = torch.tensor(self.points, dtype=torch.float32, device=self.dev)
         self.points = None
-        self.cells[0].data = torch.tensor(self.cells[0].data, dtype=torch.int64, device=self.dev)
+        # Avoid constructing a new Torch tensor from an existing tensor.
+        if isinstance(self.cells[0].data, torch.Tensor):
+            self.cells[0].data.to(self.dev)
+        else:
+            self.cells[0].data = torch.tensor(self.cells[0].data, device=self.dev)
         self.num_points = self.tensor_points.size()[0]
         self.dimensionality = self.tensor_points.size()[1]
         self.id = identifier
         self.initial_com = self.center_of_mass()
+        self.calculated_facet_normals = False
 
     @property
     def cells_dict(self):
@@ -161,7 +166,7 @@ class TorchMeshGpu(Mesh):
                                                        self.cells[0].data.cpu().numpy().astype(np.uint32),
                                                        num_nodes=target)
 
-        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle', new_triangles)])
+        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle', new_triangles.astype(np.int64))])
         return self.from_mesh(new_mesh, self.id, self.dev)
 
     def set_points(self, transformed_points, reset_com=False):
@@ -251,13 +256,31 @@ class TorchMeshGpu(Mesh):
         """
         (Re-)Calculates the normalised normal vectors to the triangular surfaces of the mesh.
         """
-        triangles = torch.tensor(self.cells[0].data)
+        triangles = self.cells[0].data
         v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
         edges_a, edges_b = v1 - v0, v2 - v0
         facet_normals = torch.linalg.cross(edges_a, edges_b)
         facet_normals = facet_normals / torch.norm(facet_normals, dim=1, keepdim=True)
+        self.calculated_facet_normals = True
         self.cell_data.update({"facet_normals": [facet_normals]})
 
+    def change_device(self, dev):
+        """
+        Change the device on which the tensor operations are or will be allocated.
+
+        :param dev: The future device on which the mesh data is to be saved.
+        :type dev: torch.device
+        """
+        if self.dev == dev:
+            return
+        else:
+            self.tensor_points = self.tensor_points.to(dev)
+            self.cells[0].data = self.cells[0].data.to(dev)
+            self.initial_com = self.initial_com.to(dev)
+            if self.calculated_facet_normals:
+                self.cell_data["facet_normals"][0].data = self.cell_data["facet_normals"][0].data.to(dev)
+
+            self.dev = dev
 
 class BatchTorchMesh(TorchMeshGpu):
     def __init__(self, mesh, identifier, dev, batch_size=50, batched_data=False, batched_points=None):

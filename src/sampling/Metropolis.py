@@ -115,19 +115,22 @@ class PDMMetropolisSampler:
         the current iteration.
         :type parameter_proposal_type: ParameterProposalType
         """
+        old_points = self.batch_mesh.tensor_points
         if parameter_proposal_type == ParameterProposalType.MODEL:
             reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters())
             if self.batch_size == 1:
                 reconstructed_points = reconstructed_points.unsqueeze(2)
-            old_points = self.batch_mesh.tensor_points
             self.batch_mesh.set_points(reconstructed_points)
             self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
             self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters())
             self.batch_mesh.old_points = old_points
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters(), save_old=True)
+            self.batch_mesh.apply_translation(-self.proposal.old_translation)
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
         else:
-            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters(), save_old=True)
+            self.batch_mesh.apply_rotation(-self.proposal.old_rotation)
+            self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters())
+        self.batch_mesh.old_points = old_points
         self.points = self.batch_mesh.tensor_points
 
     def determine_quality(self, parameter_proposal_type: ParameterProposalType):
@@ -147,7 +150,7 @@ class PDMMetropolisSampler:
             # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior)
+                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior, self.dev)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -208,3 +211,25 @@ class PDMMetropolisSampler:
         :rtype: float
         """
         return float(self.accepted) / (self.accepted + self.rejected)
+
+    def change_device(self, dev):
+        """
+
+        :param dev:
+        :return:
+        """
+        if self.dev == dev:
+            return
+        else:
+            self.model.change_device(dev)
+            self.proposal.change_device(dev)
+            self.batch_mesh.change_device(dev)
+            self.points = self.batch_mesh.tensor_points
+            self.target.change_device(dev)
+            self.target_points = self.target.tensor_points
+
+
+            self.old_posterior = self.old_posterior.to(dev)
+            self.posterior = self.posterior.to(dev)
+
+            self.dev = dev

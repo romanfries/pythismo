@@ -202,7 +202,7 @@ class PointDistributionModel:
         explicitly in the case of ‘mean_and_cov=True’.
         :type rank: int
         :param dev: An object representing the device on which the tensor operations are or will be allocated. Must only
-        be specified explicitly in the case of ‘read_in=True’.
+        be specified explicitly in the case of ‘read_in=True’. Otherwise, the device is derived from the input data.
         :type dev: torch.device
         """
         self.read_in = read_in
@@ -212,18 +212,20 @@ class PointDistributionModel:
             self.stacked_points = None
             # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
             # did not work. Why?
-            self.mean = torch.tensor((model.get('points').reshape(-1, order='F'))[:, np.newaxis], device=dev)
+            self.dev = dev
+            self.mean = torch.tensor((model.get('points').reshape(-1, order='F'))[:, np.newaxis], device=self.dev)
             self.points_centered = None
             self.num_points = int(self.mean.shape[0] / 3)
             self.rank = model.get('basis').shape[1]
-            self.eigenvalues = torch.tensor(model.get('var'), device=dev)
-            self.eigenvectors = torch.tensor(model.get('basis'), device=dev)
-            self.components = self.eigenvectors * torch.tensor(model.get('std'), device=dev)
+            self.eigenvalues = torch.tensor(model.get('var'), device=self.dev)
+            self.eigenvectors = torch.tensor(model.get('basis'), device=self.dev)
+            self.components = self.eigenvectors * torch.tensor(model.get('std'), device=self.dev)
             self.parameters = None
             self.decimated = False
         elif self.mean_and_cov:
             self.meshes = None
             self.stacked_points = None
+            self.dev = mean.device
             self.mean = mean
             self.points_centered = None
             self.num_points = int(self.mean.shape[0] / 3)
@@ -236,6 +238,7 @@ class PointDistributionModel:
         else:
             self.meshes = meshes
             self.stacked_points = extract_points(self.meshes)
+            self.dev = self.stacked_points.device
             self.mean = torch.mean(self.stacked_points, dim=1)[:, None]
             self.points_centered = self.stacked_points - self.mean
             # Avoid explicit representation of the covariance matrix
@@ -435,3 +438,29 @@ class PointDistributionModel:
             return torch.cov(self.stacked_points)
         else:
             return self.eigenvectors @ (torch.diag(self.eigenvalues) @ self.eigenvectors.t())
+
+    def change_device(self, dev):
+        """
+        Change the device on which the tensor operations are or will be allocated.
+
+        :param dev: The future device on which the mesh data is to be saved.
+        :type dev: torch.device
+        """
+        if self.dev == dev:
+            return
+        else:
+            if not self.read_in and not self.mean_and_cov and not self.decimated:
+                for mesh in self.meshes:
+                    mesh.change_device(dev)
+                self.stacked_points = self.stacked_points.to(dev)
+                self.points_centered = self.points_centered.to(dev)
+                self.parameters = self.parameters.to(dev)
+            self.mean = self.mean.to(dev)
+            self.eigenvalues = self.eigenvalues.to(dev)
+            self.eigenvectors = self.eigenvectors.to(dev)
+            self.components = self.components.to(dev)
+
+            self.dev = dev
+
+
+

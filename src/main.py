@@ -44,9 +44,9 @@ def run(dev,
                                              reference, batched_reference, target, model)
         sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
         generator = torch.Generator(device=dev)
-        for i in range(101):
+        for i in range(1001):
             random = torch.rand(1, device=dev, generator=generator).item()
-            if random < 1.0:
+            if random < 0.6:
                 proposal = ParameterProposalType.MODEL
             elif 0.6 <= random < 0.8:
                 proposal = ParameterProposalType.TRANSLATION
@@ -99,19 +99,19 @@ def run(dev,
 
         # TODO: Think again: Does it make sense to represent the target as a TorchMeshGpu?
         target = reference.copy()
-        target.set_points(model.get_points_from_parameters(1.0 * np.ones(model.rank)))
+        target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
         target = create_artificial_partial_target(target)
-        reference.set_points(model.get_points_from_parameters(np.zeros(model.rank)))
+        reference.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=dev)), reset_com=True)
         batched_reference = BatchTorchMesh(reference, 'reference', dev, batch_size=2)
 
-        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, np.zeros(model.rank))
-        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, np.zeros(model.rank), reference,
-                                             batched_reference, target, model)
-        sampler = PDMMetropolisSampler(model, random_walk, batched_reference, target, correspondences=False)
-        generator = np.random.default_rng()
-        for i in range(5):
-            random = generator.random()
-            if random < 1.0:
+        random_walk = GaussianRandomWalkProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev)
+        random_walk_2 = ClosestPointProposal(batched_reference.batch_size, torch.zeros(model.rank, device=dev), dev,
+                                             reference, batched_reference, target, model)
+        sampler = PDMMetropolisSampler(model, random_walk_2, batched_reference, target, correspondences=False)
+        generator = torch.Generator(device=dev)
+        for i in range(1):
+            random = torch.rand(1, device=dev, generator=generator).item()
+            if random < 0.6:
                 proposal = ParameterProposalType.MODEL
             elif 0.6 <= random < 0.8:
                 proposal = ParameterProposalType.TRANSLATION
@@ -147,9 +147,12 @@ if __name__ == "__main__":
                                             "datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=True,
-                                            simplify_model=True
+                                            read_model=False,
+                                            simplify_model=False
                                             )
+    batched_reference.change_device(torch.device("cpu"))
+    model.change_device(torch.device("cpu"))
+    sampler.change_device(torch.device("cpu"))
     visualizer = MainVisualizer(batched_reference, model, sampler)
     print(sampler.acceptance_ratio())
     visualizer.run()

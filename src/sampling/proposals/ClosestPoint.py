@@ -1,11 +1,10 @@
-import numpy as np
+import math
 import torch
 import trimesh.base
-from pytorch3d.loss.point_mesh_distance import point_face_distance
 from trimesh import Trimesh
 
 from src.mesh.TMesh import BatchTorchMesh
-from src.model.PointDistribution import PointDistributionModel, get_parameters
+from src.model.PointDistribution import PointDistributionModel
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType, GaussianRandomWalkProposal
 
 
@@ -47,8 +46,8 @@ def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, dev, reference, batched_reference, target, model, sigma_mod=0.5,
-                 sigma_trans=0.1, sigma_rot=0.0001, chain_length_step=1000):
+    def __init__(self, batch_size, starting_parameters, dev, reference, batched_reference, target, model, sigma_mod=1.0,
+                 sigma_trans=1.0, sigma_rot=0.001, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -115,6 +114,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         size of 1.0, the proposed sample is an independent sample from the calculated posterior.
         The noise of the observations is modeled with low variance along the normal direction and high variance along
         the surface. For this reason, the corresponding facet and vertex normals must be calculated along the way.
+        Remark: Currently only designed to calculate the posterior at the beginning of the sampling process and not
+        optimised for calculation on a GPU. Uses Trimesh, which does not support GPUs.
 
         :param batched_reference: Current batch with reference meshes. When the analytic posterior is calculated, an
         element of the batch is randomly selected from whose points the distances to the target are determined.
@@ -182,7 +183,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             for line in outline:
                 if isinstance(line, trimesh.path.entities.Line):
                     boundary_vertices = self.target.tensor_points[line.nodes]
-                    on_boundary = torch.tensor(is_point_on_line_segment(closest_points, boundary_vertices))
+                    on_boundary = is_point_on_line_segment(closest_points, boundary_vertices)
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16
@@ -222,7 +223,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         # 4: Compute the analytic posterior \mathcal{M}_{\alpha} (eq. 10) with L and {\Sigma_{s_{i}}}.
         mean_prior = self.prior_model.mean
-        cov_prior = torch.tensor(self.prior_model.get_covariance())
+        cov_prior = self.prior_model.get_covariance()
 
         cov_reshaped = torch.zeros((3 * m, 3 * m), device=self.dev)
         indices = torch.arange(0, 3 * m, 3, device=self.dev).unsqueeze(1) + torch.arange(3, device=self.dev).unsqueeze(
@@ -270,8 +271,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             #    self.prior_model.components))
             self.parameters = self.projection_matrix @ self.posterior_parameters
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.translation = self.translation + perturbations * self.sigma_trans * (1 / torch.sqrt(torch.Tensor(
-                self.prior_model.num_points)))
+            self.translation = self.translation + perturbations * self.sigma_trans * math.sqrt(
+                (1 / self.prior_model.num_points))
         else:
             self.rotation = self.rotation + perturbations * self.sigma_rot
         # self.parameters = torch.zeros((self.num_parameters, self.batch_size))
@@ -296,3 +297,29 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.old_posterior_parameters = None
         self.old_translation = None
         self.old_rotation = None
+
+    def change_device(self, dev):
+        """
+        Change the device on which the tensor operations are or will be allocated. Only execute between completed
+        iterations of the sampling process.
+
+        :param dev: The future device on which the mesh data is to be saved.
+        :type dev: torch.device
+        """
+        if self.dev == dev:
+            return
+        else:
+            self.parameters = self.parameters.to(dev)
+            self.translation = self.translation.to(dev)
+            self.rotation = self.rotation.to(dev)
+            self.chain = self.chain.to(dev)
+            self.posterior = self.posterior.to(dev)
+
+            self.posterior_parameters = self.posterior_parameters.to(dev)
+            self.reference.change_device(dev)
+            self.target.change_device(dev)
+            self.prior_model.change_device(dev)
+            self.posterior_model.change_device(dev)
+            self.projection_matrix = self.projection_matrix.to(dev)
+
+            self.dev = dev
