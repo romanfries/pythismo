@@ -62,7 +62,9 @@ class ICPAnalyser:
     def __init__(self, meshes, iterations=100):
         """
         Class to rigidly align a set of meshes using the Iterative Closest Points (ICP) algorithm.
-        All meshes are aligned to the first entry in the mesh list 'meshes' that is selected as a reference.
+        All meshes are aligned to the first entry in the mesh list 'meshes' that is selected as a reference. The
+        reference may differ in the number of points from the other meshes. However, all other meshes must have the same
+        number of points.
         It is assumed that an initial transformation has already been applied to ensure that the meshes are
         approximately aligned. If this is not the case, the result may be poor because the algorithm has become trapped
         in a local minimum.
@@ -86,6 +88,7 @@ class ICPAnalyser:
         """
         reference_points = self.reference.tensor_points
         mesh_points_list = [mesh.tensor_points for mesh in self.meshes]
+        # Stack expects each tensor to be equal size!
         mesh_points = torch.stack(mesh_points_list)
         reference_points = reference_points.unsqueeze(0).repeat(mesh_points.size()[0], 1, 1)
         icp_solution = pytorch3d.ops.iterative_closest_point(mesh_points, reference_points,

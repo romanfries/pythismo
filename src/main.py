@@ -103,7 +103,7 @@ if __name__ == "__main__":
                                             "datasets/femur-data/project-data/registered",
                                             model_path="datasets/models",
                                             reference_path="datasets/femur-data/project-data/reference-decimated",
-                                            read_model=True,
+                                            read_model=False,
                                             simplify_model=False
                                             )
     batched_reference.change_device(torch.device("cpu"))
