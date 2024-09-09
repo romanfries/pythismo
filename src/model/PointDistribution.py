@@ -47,12 +47,39 @@ def apply_svd(centered_points, num_components):
     return eigenvalues[:num_components], V_T[:, :num_components]
 
 
+def apply_batch_svd(centered_points, num_components):
+    """
+    Applies SVD (singular value decomposition) to a centered data matrix for each element in a batch and returns the
+    first 'num_components' eigenvector/eigenvalue pairs for each batch element to create a point distribution model
+    (PDM).
+
+    :param centered_points: Centered data matrix with shape (num_points, num_samples, batch_size).
+    :type centered_points: torch.Tensor
+    :param num_components: Indicates how many eigenvector/eigenvalue pairs are considered (rank of the model).
+    :type num_components: int
+    :return: Tuple with two elements:
+        - torch.Tensor: The first 'num_components' eigenvalues in descending order with shape
+          (num_components, batch_size).
+        - torch.Tensor: The corresponding first 'num_components' eigenvectors with shape
+          (num_points, num_components, batch_size).
+    """
+    # Transpose to shape (batch_size, num_samples, num_points) for batched SVD
+    centered_points = centered_points.permute(2, 1, 0)
+    U, s, V_T = torch.linalg.svd(centered_points, full_matrices=False)
+    eigenvalues = (s ** 2) / (num_components - 1)
+
+    eigenvalues = eigenvalues[:, :num_components]
+    V_T = V_T[:, :num_components, :]
+
+    return eigenvalues.t(), V_T.permute(2, 1, 0)
+
+
 def get_parameters(stacked_points, components):
     """
     Determines the model parameters in the model space that correspond to the given mesh points. This involves solving
     a least squares problem.
 
-    :param stacked_points: Batch with given mesh points with shape (3 * num_points, batch_size).
+    :param stacked_points: Batch with given centered mesh points with shape (3 * num_points, batch_size).
     :type stacked_points: torch.Tensor
     :param components: Eigenvectors of the model multiplied by the square root of the respective eigenvalue with shape
     (3 * num_points, model_rank).
@@ -61,6 +88,23 @@ def get_parameters(stacked_points, components):
     :rtype: torch.Tensor
     """
     return torch.linalg.lstsq(components, stacked_points).solution
+
+
+def get_batch_parameters(stacked_points, components):
+    """
+    Determines the model parameters in a batch of model spaces that correspond to the given mesh points. This involves
+    solving least squares problems.
+
+    :param stacked_points: Batch with given centered mesh points with shape (3 * num_points, batch_size, num_models).
+    :type stacked_points: torch.Tensor
+    :param components: Eigenvectors of the models multiplied by the square root of the respective eigenvalue with shape
+    (3 * num_points, model_rank, num_models).
+    :type components: torch.Tensor
+    :return: Calculated model parameters with shape (model_rank, batch_size, num_models).
+    :rtype: torch.Tensor
+    """
+    parameters = torch.linalg.lstsq(components.permute(2, 0, 1), stacked_points.permute(2, 0, 1)).solution
+    return parameters.permute(1, 2, 0)
 
 
 def gaussian_pdf(x, mean=0.0, sigma=1.0):
@@ -327,24 +371,24 @@ class PointDistributionModel:
         :param decimation_target: Number of target points that the reduced PDM should have.
         :type decimation_target: int
         :return: The first mesh is reduced to the number of target points using QEM, then the PDM is defined at these
-        points using interpolation (radial basis functions). This mesh instance is returned.
+        points using interpolation (radial basis functions). This mesh instance is returned. Nothing is returned if the
+        decimation was not successful.
         :rtype: TorchMeshGpu
         """
-        reference_decimated = self.meshes[0]
         if self.read_in or self.mean_and_cov:
             warnings.warn("Warning: Decimation of imported Point Distribution Models is not (yet) supported.",
                           UserWarning)
-            return reference_decimated
+            return None
 
         if self.num_points <= decimation_target:
             warnings.warn("Warning: No decimation necessary, as the target is below the current number of points.",
                           UserWarning)
-            return reference_decimated
+            return None
 
         if self.decimated:
             warnings.warn("Warning: Point Distribution Model can only be decimated once.",
                           UserWarning)
-            return reference_decimated
+            return None
 
         reference_decimated = self.meshes[0].simplify_qem(decimation_target)
         mean_fun, cov_fun = self.pdm_to_interpolated_gp(decimation_target)
@@ -463,5 +507,197 @@ class PointDistributionModel:
 
             self.dev = dev
 
+    def get_batched_pdm(self, batch_size):
+        """
+        Receive a batched version of this Point Distribution Model (PDM).
+
+        :param batch_size: Specifies how many copies of the PDM should be present in the BatchedPointDistributionModel
+        instance.
+        :type batch_size: int
+        :return: Said BatchedPointDistributionModel instance.
+        :rtype: BatchedPointDistributionModel
+        """
+        return BatchedPointDistributionModel(batch_size=batch_size, mean_and_cov=True,
+                                             mean=self.mean.expand(-1, batch_size),
+                                             cov=self.get_covariance().unsqueeze(-1).expand(-1, -1, batch_size),
+                                             rank=self.rank)
 
 
+class BatchedPointDistributionModel(PointDistributionModel):
+    def __init__(self, batch_size, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None,
+                 rank=None, dev=None):
+        """
+        Class that defines and creates a batched point distribution model (PDM), i.e., 'batch_size' many different PDMs
+        with the same number of points and the same rank.
+        This can be done in three different ways: It can be imported from a .h5 file, a complete set of mean vector and
+        covariance matrix can be passed, or a batch of meshes can be given from which the PDM is to be calculated.
+        If the model was read in from a .h5 file or was created from a list of meshes, the same model is copied
+        ‘batch_size’ times.
+        Remark: Of the two Boolean values ‘read_in’ and ‘mean_and_cov’, at most one should be True.
+
+        :param batch_size: Specifies how many point distribution models are to be represented simultaneously.
+        :type batch_size: int
+        :param read_in: Boolean value that specifies whether a read in model is available.
+        :type read_in: bool
+        :param mean_and_cov: Boolean value that specifies whether a complete set of mean vector and covariance matrix is
+        passed.
+        :type mean_and_cov: bool
+        :param meshes: List of meshes from which the PDM is to be calculated.
+        :type meshes: list
+        :param mean: Mean vector with shape (3 * num_points, batch_size).
+        :type mean: torch.Tensor
+        :param cov: Full covariance matrix with shape (3 * num_points, 3 * num_points, batch_size).
+        :type cov: torch.Tensor
+        :param model: Read-in PDM in the form of a Python dictionary. To get this dictionary, use
+        'src/custom_io/H5ModelIO.py'.
+        :type model: dict
+        :param rank: Specifies how many main components are to be taken into account. Must only be specified
+        explicitly in the case of ‘mean_and_cov=True’.
+        :type rank: int
+        :param dev: An object representing the device on which the tensor operations are or will be allocated. Must only
+        be specified explicitly in the case of ‘read_in=True’. Otherwise, the device is derived from the input data.
+        :type dev: torch.device
+        """
+        self.batch_size = batch_size
+        self.read_in = read_in
+        self.mean_and_cov = mean_and_cov
+        if self.read_in:
+            self.meshes = None
+            self.stacked_points = None
+            # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
+            # did not work. Why?
+            self.dev = dev
+            self.mean = torch.tensor((model.get('points').reshape(-1, order='F'))[:, np.newaxis], device=self.dev) \
+                .expand(-1, self.batch_size)
+            self.points_centered = None
+            self.num_points = int(self.mean.shape[0] / 3)
+            self.mean = self.mean.expand(-1, self.batch_size)
+            self.rank = model.get('basis').shape[1]
+            self.eigenvalues = torch.tensor(model.get('var'), device=self.dev).unsqueeze(-1).expand(-1, self.batch_size)
+            self.eigenvectors = torch.tensor(model.get('basis'), device=self.dev).unsqueeze(-1).expand(-1, -1,
+                                                                                                       self.batch_size)
+            self.components = self.eigenvectors * torch.tensor(model.get('std'), device=self.dev).view(1, self.rank, 1)
+            self.parameters = None
+            self.decimated = False
+        elif self.mean_and_cov:
+            self.meshes = None
+            self.stacked_points = None
+            self.dev = mean.device
+            self.mean = mean
+            self.points_centered = None
+            self.num_points = int(self.mean.shape[0] / 3)
+            self.rank = rank
+            eigenvalues, self.eigenvectors = apply_batch_svd(cov, self.rank)
+            self.eigenvalues = torch.sqrt((self.rank - 1) * eigenvalues)
+            self.components = self.eigenvectors * torch.sqrt(self.eigenvalues).view(1, self.rank, -1)
+            self.parameters = None
+            self.decimated = False
+        else:
+            self.meshes = meshes
+            self.stacked_points = extract_points(self.meshes)
+            self.dev = self.stacked_points.device
+            self.mean = torch.mean(self.stacked_points, dim=1)[:, None]
+            self.points_centered = (self.stacked_points - self.mean).unsqueeze(-1).expand(-1, -1, self.batch_size)
+            self.mean = self.mean.expand(-1, self.batch_size)
+            # Avoid explicit representation of the covariance matrix
+            # self.covariance = np.cov(self.stacked_points)
+            # Dimensionality of 3 hardcoded here!
+            self.num_points = int(self.stacked_points.size()[0] / 3)
+            self.rank = self.stacked_points.size()[1]
+            # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
+            self.eigenvalues, self.eigenvectors = apply_batch_svd(self.points_centered, self.rank)
+            self.components = self.eigenvectors * torch.sqrt(self.eigenvalues).view(1, self.rank, -1)
+            # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
+            self.parameters = get_batch_parameters(self.points_centered[:, :, :], self.components)
+            self.decimated = False
+
+    def get_eigenvalue_k(self, k):
+        """
+        Returns the kth largest eigenvalue of all the PDMs.
+
+        :param k: Specifies which eigenvalue is to be returned.
+        :type k: int
+        :return: The kth largest eigenvalue with shape (1, batch_size).
+        :rtype: torch.Tensor
+        """
+        return self.eigenvalues[k, :]
+
+    def get_component_k(self, k):
+        """
+        Returns the kth component of all the PDMs. The kth component of the PDM is defined here as the square root of
+        the kth eigenvalue times the kth eigenvector.
+
+        :param k: Specifies which component is to be returned.
+        :type k: int
+        :return: The kth component of the PDM with shape (3 * num_points, 1, batch_size).
+        :rtype: torch.Tensor
+        """
+        return self.components[:, k, :]
+
+    def get_points_from_parameters(self, parameters):
+        """
+        Takes model parameters and calculates the coordinates of all points of the instances defined by these
+        parameters. There are two options: Either only one set of model parameters is provided, or as many sets as the
+        batch size of the batched PDM. In the first case, the same parameters are used as input for all internal PDMs.
+
+        :param parameters: Model parameters for which the point coordinates of the associated instances are to be
+        calculated, either of shape (rank,) or (rank, batch_size).
+        :type parameters: torch.Tensor
+        :return: Calculated point coordinates of shape (num_points, 3, batch_size).
+        :rtype: torch.Tensor
+        """
+        # TODO: Now, for every set of parameters, the points under all models are calculated.
+        if parameters.ndim == 1:
+            parameters = parameters.unsqueeze(1).expand(-1, self.batch_size)
+
+        stacked_points = torch.bmm(self.components.permute(2, 0, 1), parameters.unsqueeze(0)
+                                   .expand(self.batch_size, -1, -1)).permute(1, 0, 2) + self.mean.unsqueeze(2)
+
+        return torch.diagonal(stacked_points.reshape((-1, 3, self.batch_size, self.batch_size)), dim1=2, dim2=3)
+
+    def decimate(self, decimation_target=200):
+        """
+        This method is not available for BatchPointDistributionModel instances.
+
+        :param decimation_target:
+        """
+        warnings.warn("Warning: PDM method invoked from BatchPDM instance. No action taken.",
+                      UserWarning)
+
+    def pdm_to_interpolated_gp(self, decimation_target):
+        """
+        This method is not available for BatchPointDistributionModel instances.
+
+        :param decimation_target:
+        """
+        warnings.warn("Warning: PDM method invoked from BatchPDM instance. No action taken.",
+                      UserWarning)
+
+    def get_covariance(self):
+        """
+        Calculates and returns the full covariance matrix of the PDM. For reasons of storage efficiency, the full
+        covariance matrix is not permanently stored.
+
+        :return: Full covariance matrix with shape (3 * num_points, 3 * num_points).
+        :rtype: torch.Tensor
+        """
+        if not self.read_in and not self.mean_and_cov and not self.decimated:
+            return (torch.matmul(self.points_centered.permute(2, 0, 1), self.points_centered.permute(2, 1, 0)) /
+                    self.points_centered.size()[1]).permute(1, 2, 0)
+        else:
+            return (self.eigenvectors.permute(2, 0, 1) @ (torch.diag_embed(self.eigenvalues.permute(1, 0)) @
+                                                          self.eigenvectors.permute(2, 1, 0))).permute(1, 2, 0)
+
+    def get_pdm(self, k):
+        """
+        Returns the kth model of the batched PDM as a single PDM.
+
+        :param k: Specifies which model is to be extracted.
+        :type k: int
+        :return: Said PDM.
+        :rtype: PointDistributionModel
+        """
+        return PointDistributionModel(mean_and_cov=True,
+                                      mean=self.mean[:, k],
+                                      cov=self.get_covariance()[:, :, k],
+                                      rank=self.rank)

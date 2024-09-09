@@ -1,3 +1,5 @@
+from enum import Enum
+
 import pytorch3d
 import torch
 
@@ -58,40 +60,69 @@ def difference_to_closest_point(ref_points, target_points, batch_size):
     return torch.transpose(distances, 1, 2)
 
 
-class ICPAnalyser:
-    def __init__(self, meshes, iterations=100):
-        """
-        Class to rigidly align a set of meshes using the Iterative Closest Points (ICP) algorithm.
-        All meshes are aligned to the first entry in the mesh list 'meshes' that is selected as a reference. The
-        reference may differ in the number of points from the other meshes. However, all other meshes must have the same
-        number of points.
-        It is assumed that an initial transformation has already been applied to ensure that the meshes are
-        approximately aligned. If this is not the case, the result may be poor because the algorithm has become trapped
-        in a local minimum.
+class ICPMode(Enum):
+    SINGLE = 1
+    BATCHED = 2
 
-        :param meshes: List of mesh instances to be aligned.
-        :type meshes: list of TorchMeshGpu
-        :param iterations: Number of iterations per alignment
-        :type iterations: int
+
+class ICPAnalyser:
+    def __init__(self, meshes, targets=None, iterations=100, mode=ICPMode.SINGLE):
         """
-        self.meshes = meshes[1:]
-        self.reference = meshes[0]
-        # self.meshes, self.reference = extract_reference(meshes)
-        # This variant of ICP assumes that the initial transformation has already been applied to the meshes.
-        self.transforms = None
+        Class to rigidly align a set of targets using the Iterative Closest Points (ICP) algorithm.
+        If no targets are specified (SINGLE mode), all meshes are aligned to the first entry in the mesh list
+        'meshes' that is selected as a reference.
+        The second mode (BATCHED mode) expects 'targets' and 'meshes' to be a BatchTorchMesh of equal batch size.
+        Each shape of the batch in 'meshes' is aligned independently to its corresponding target in 'targets'.
+        Remark: ICP will only produce reasonable results if the shapes are already roughly aligned. This method does not
+        use a parameter for an initial transformation.
+        Remark 2: Naming conventions chosen as in the lecture notes of the course "Statistical Shape Modelling" by
+        Marcel Lüthi.
+
+        :param meshes: List or BatchTorchMesh of mesh instances to be aligned.
+        :type meshes: list of TorchMeshGpu or BatchTorchMesh
+        :param references: Optional, BatchTorchMesh with individual targets for the elements of 'targets'.
+        :type references: None or BatchTorchMesh
+        :param iterations: Number of iterations per alignment.
+        :type iterations: int
+        :param mode: Defines whether the class operates in SINGLE or BATCHED mode.
+        :type mode: ICPMode
+        """
+        self.mode = mode
         self.iterations = iterations
+
+        if mode == ICPMode.SINGLE:
+            self.reference = meshes[1:]
+            self.target = meshes[0]
+        elif mode == ICPMode.BATCHED:
+            if targets is None:
+                raise ValueError("Targets must not be None in BATCHED mode.")
+            self.reference = meshes
+            self.target = targets
+        else:
+            raise ValueError("Invalid mode. Use ICPMode.SINGLE or ICPMode.BATCHED.")
 
     def icp(self):
         """
-        Method that must be called in order to actually execute the alignment step. After the call, ‘meshes’ contains
-        the transformed meshes.
+        Method that must be called to execute the alignment step. After the call, `reference` will contain
+        the transformed references.
         """
-        reference_points = self.reference.tensor_points
-        mesh_points_list = [mesh.tensor_points for mesh in self.meshes]
-        # Stack expects each tensor to be equal size!
-        mesh_points = torch.stack(mesh_points_list)
-        reference_points = reference_points.unsqueeze(0).repeat(mesh_points.size()[0], 1, 1)
-        icp_solution = pytorch3d.ops.iterative_closest_point(mesh_points, reference_points,
-                                                             max_iterations=self.iterations)
-        transformed_points = icp_solution.Xt
-        _ = list(map(lambda x, y: x.set_points(y, reset_com=True), self.meshes, transformed_points))
+        if self.mode == ICPMode.SINGLE:
+            target_points = self.target.tensor_points
+            reference_points_list = [mesh.tensor_points for mesh in self.reference]
+            reference_points = torch.stack(reference_points_list)
+            target_points = target_points.unsqueeze(0).expand(reference_points.size()[0], -1, -1)
+            icp_solution = pytorch3d.ops.iterative_closest_point(reference_points, target_points,
+                                                                 max_iterations=self.iterations)
+            transformed_points = icp_solution.Xt
+            _ = list(map(lambda x, y: x.set_points(y, reset_com=True), self.reference, transformed_points))
+        elif self.mode == ICPMode.BATCHED:
+            if self.target.tensor_points.shape[2] != self.reference.tensor_points.shape[2]:
+                raise ValueError("In BATCHED mode, 'targets' and 'references' must have the same batch size.")
+
+            reference_points = self.reference.tensor_points.permute(2, 0, 1)
+            target_points = self.target.tensor_points.permute(2, 0, 1)
+            icp_solution = pytorch3d.ops.iterative_closest_point(reference_points, target_points,
+                                                                 max_iterations=self.iterations)
+
+            transformed_points = icp_solution.Xt.permute(1, 2, 0)
+            self.reference.set_points(transformed_points, reset_com=True)

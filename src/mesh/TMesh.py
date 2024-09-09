@@ -1,5 +1,7 @@
 import numpy as np
 import meshio
+from trimesh import Trimesh
+
 import pytorch3d
 from meshio import Mesh
 import torch
@@ -106,7 +108,7 @@ class TorchMeshGpu(Mesh):
         """
         Adaptation of an internal meshio.Mesh method to ensure compatibility with Torch.
 
-        :return: Dictionary containing a dictionary with additional triangle data.
+        :return: Dictionary containing a dictionary with the added additional triangle data.
         :rtype: dict
         """
         cell_data_dict = {}
@@ -126,10 +128,14 @@ class TorchMeshGpu(Mesh):
         """
         Redundant method.
 
-        :param mesh:
-        :param identifier:
-        :param dev:
-        :return:
+        :param mesh: Mesh instance that serves as a base.
+        :type mesh: meshio.Mesh
+        :param identifier: Identification string.
+        :type identifier: str
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
+        :return Newly created TorchMeshGpu instance.
+        :rtype: TorchMeshGpu
         """
         return cls(mesh, identifier, dev)
 
@@ -153,7 +159,8 @@ class TorchMeshGpu(Mesh):
                                                        self.cells[0].data.cpu().numpy().astype(np.uint32),
                                                        num_nodes=target)
 
-        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32), [meshio.CellBlock('triangle', new_triangles.astype(np.int64))])
+        new_mesh = meshio.Mesh(new_coordinates.astype(np.float32),
+                               [meshio.CellBlock('triangle', new_triangles.astype(np.int64))])
         return self.from_mesh(new_mesh, self.id, self.dev)
 
     def set_points(self, transformed_points, reset_com=False):
@@ -171,7 +178,7 @@ class TorchMeshGpu(Mesh):
         if reset_com:
             self.initial_com = self.center_of_mass()
 
-    def apply_transformation(self, transform: torch.Tensor, save_old: bool = False):
+    def apply_transformation(self, transform: torch.Tensor):
         """
         Changes the points of the mesh by multiplying them by a (4, 4) transformation matrix.
 
@@ -182,19 +189,22 @@ class TorchMeshGpu(Mesh):
         saving the old coordinates.
         :type save_old: bool
         """
-        additional_col = torch.ones((self.tensor_points.size()[0], 1), device=self.tensor_points.device,
-                                    dtype=self.tensor_points.dtype)
+        additional_col = torch.ones((self.tensor_points.size()[0], 1), device=self.dev)
         extended_points = torch.cat((self.tensor_points, additional_col), dim=1)
         transformed_points = extended_points @ transform.T
         transformed_points = transformed_points[:, :3]
         self.set_points(transformed_points)
 
-    def apply_translation(self, translation_parameters):
+    def apply_translation(self, translation_parameters, save_old=False):
         """
         Changes the points of the mesh by adding a (3,) translation vector.
 
         :param translation_parameters: Tensor with shape (3,) containing the translation parameters.
         :type translation_parameters: torch.Tensor
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
+        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
+        saving the old coordinates.
+        :type save_old: bool
         """
         translated_points = self.tensor_points + translation_parameters
         self.set_points(translated_points)
@@ -203,7 +213,8 @@ class TorchMeshGpu(Mesh):
         """
         Rotates the mesh instance using given Euler angles (ZYX convention).
 
-        :param rotation_parameters: Torch tensor with shape (3,) containing the Euler angles (in radians).
+        :param rotation_parameters: Torch tensor with shape (3,) / (3, batch_size) [when called from a BatchTorchMesh
+        instance] containing the Euler angles (in radians).
         :type rotation_parameters: torch.Tensor
         :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
         only relevant if the method is called from a BatchTorchMesh instance. TorchMeshGpu does not offer the option of
@@ -211,8 +222,8 @@ class TorchMeshGpu(Mesh):
         :type save_old: bool
         """
         transformation = get_transformation_matrix(rotation_parameters)
-        self.apply_translation(- self.initial_com)
-        self.apply_transformation(transformation, save_old)
+        self.apply_translation(- self.initial_com, save_old)
+        self.apply_transformation(transformation)
         self.apply_translation(self.initial_com)
 
     def center_of_mass(self):
@@ -231,17 +242,19 @@ class TorchMeshGpu(Mesh):
         representations.
         The generated Pointclouds object represents ‘batch_size’ times the same point cloud, namely the one consisting
         of the points of the calling TorchMeshGpu instance.
-        :param batch_size: Specifies how often the point cloud of the TorchMeshGpu is repeated in the Pointclouds object.
+
+        :param batch_size: Specifies how often the point cloud of the TorchMeshGpu is repeated in the Pointclouds
+        object.
         :type batch_size: int
         :return: Above described Pointclouds object.
         :rtype: pytorch3d.structures.Pointclouds
         """
-        points = self.tensor_points.unsqueeze(0).repeat(batch_size, 1, 1)
+        points = self.tensor_points.unsqueeze(0).expand(batch_size, -1, -1)
         return pytorch3d.structures.Pointclouds(points)
 
     def calc_facet_normals(self):
         """
-        (Re-)Calculates the normalised normal vectors to the triangular surfaces of the mesh.
+        (Re-)Calculates the unit-length normal vectors to the triangular surfaces of the mesh.
         """
         triangles = self.cells[0].data
         v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
@@ -269,6 +282,28 @@ class TorchMeshGpu(Mesh):
 
             self.dev = dev
 
+    def partial_shape(self, idx1, idx2, ratio_observed):
+        """
+        Takes the two indices of the points that define the length of the mesh and the proportion of the desired
+        observed part and determines the corresponding partial mesh.
+
+        :param idx1: Index of the highest point of the mesh.
+        :type idx1: int
+        :param idx2: Index of the lowest point of the mesh.
+        :type idx2: int
+        :param ratio_observed: Proportion of the desired observed part.
+        :type ratio_observed: float
+        :return: Partial shape as a TorchMeshGpu instance.
+        :rtype: TorchMeshGpu
+        """
+        plane_normal = self.tensor_points[idx1, :] - self.tensor_points[idx2, :]
+        plane_origin = self.tensor_points[idx2, :] + ratio_observed * plane_normal
+        mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin, plane_normal)
+        return TorchMeshGpu(
+            meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
+            'partial_shape', self.dev)
+
+
 class BatchTorchMesh(TorchMeshGpu):
     def __init__(self, mesh, identifier, dev, batch_size=50, batched_data=False, batched_points=None):
         """
@@ -286,7 +321,7 @@ class BatchTorchMesh(TorchMeshGpu):
         :param batch_size: Self-explanatory.
         :type batch_size: int
         :param batched_data: Boolean variable that specifies whether the BatchTorchMesh is initialized with a batch of
-        point coordinates.
+        (different) point coordinates.
         :type batched_data: bool
         :param batched_points: 3-dimensional tensor with shape (num_points, dimensionality, batch_size) with the batched
         point coordinates.
@@ -295,7 +330,7 @@ class BatchTorchMesh(TorchMeshGpu):
         # possibly prone to errors
         super().__init__(mesh, identifier, dev)
         if not batched_data:
-            self.tensor_points = self.tensor_points.unsqueeze(2).repeat(1, 1, batch_size)
+            self.tensor_points = self.tensor_points.unsqueeze(2).expand(-1, -1, batch_size)
             self.batch_size = batch_size
         else:
             self.tensor_points = batched_points
@@ -305,13 +340,20 @@ class BatchTorchMesh(TorchMeshGpu):
         self.initial_com = self.center_of_mass()
 
     @classmethod
-    def from_mesh(cls, mesh, identifier, dev, batch_size=500):
+    def from_mesh(cls, mesh, identifier, dev, batch_size=50):
         """
         Redundant method.
-        :param mesh:
-        :param identifier:
-        :param batch_size:
-        :return:
+
+        :param mesh: TorchMesh instance, which serves as the basis. The triangle data is transferred from it.
+        :type mesh: TorchMeshGpu
+        :param identifier: Identification string.
+        :type identifier: str
+        :param dev: An object representing the device on which the tensor operations are or will be allocated.
+        :type dev: torch.device
+        :param batch_size: Self-explanatory.
+        :type batch_size: int
+        :return Newly created BatchTorchMesh instance.
+        :rtype: BatchTorchMesh
         """
         return cls(mesh, identifier, dev, batch_size=batch_size)
 
@@ -336,7 +378,6 @@ class BatchTorchMesh(TorchMeshGpu):
         :param reset_com: Boolean value that specifies whether the center of mass of the mesh should be recalculated.
         :type reset_com: bool
         """
-        # transformed_points: Torch tensor
         if save_old:
             self.old_points = self.tensor_points.clone()
         else:
@@ -400,6 +441,18 @@ class BatchTorchMesh(TorchMeshGpu):
                                          self.old_points)
         self.old_points = None
 
+    def to_pytorch3d_pointclouds(self, batch_size=1):
+        """
+        Helper method to translate a given BatchTorchMesh into a pytorch3d.structures.Pointclouds object.
+        The Pointclouds class provides functions for working with batches of 3d point clouds, and converting between
+        representations.
+
+        :return: Above described Pointclouds object.
+        :rtype: pytorch3d.structures.Pointclouds
+        """
+        points = torch.permute(self.tensor_points, (2, 0, 1))
+        return pytorch3d.structures.Pointclouds(points)
+
     def to_pytorch3d_meshes(self):
         """
         Helper method to translate a given BatchTorchMesh into a pytorch3d.structures.Meshes object.
@@ -412,135 +465,17 @@ class BatchTorchMesh(TorchMeshGpu):
         :rtype: pytorch3d.structures.Meshes
         """
         verts = torch.permute(self.tensor_points, (2, 0, 1))
-        faces = self.cells[0].data.unsqueeze(0).repeat(self.batch_size, 1, 1)
+        faces = self.cells[0].data.unsqueeze(0).expand(self.batch_size, -1, -1)
         return pytorch3d.structures.Meshes(verts, faces)
 
     def calc_facet_normals(self):
         """
-        This method should not be used for BatchTorchMesh instances. The normal vectors are different for all elements
-        of the batch.
+        (Re-)Calculates the unit-length normal vectors to the triangular surfaces of the mesh.
         """
-        warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
-                      UserWarning)
-
-
-# The following methods create an artificial partial target from a full mesh by removing points above a defined plane
-# from the mesh.
-
-
-def create_artificial_partial_target(full_target):
-    """
-    Creates a partial target, whereby all points above a defined plane are removed from a given mesh instance.
-    The points defining the plane were determined by hand and are based on empirical values for the specific femur case.
-
-    :param full_target: Original complete mesh instance.
-    :type full_target: TorchMeshGpu
-    :return: Artificial partial target.
-    :rtype: TorchMeshGpu
-    """
-    p1, p2, p3 = torch.tensor([0.0, 1.0, 100.0], device=full_target.dev), \
-        torch.tensor([1.0, 0.0, 100.0], device=full_target.dev), torch.tensor([0.0, 0.0, 100.0], device=full_target.dev)
-
-    normal, d = define_plane_from_points(p1, p2, p3)
-
-    filtered_points, removed_indices = remove_points_above_plane(full_target.tensor_points, normal, d)
-    filtered_cells = remove_triangles_with_removed_points(full_target.cells[0].data, removed_indices)
-    filtered_cells = update_triangle_indices(full_target.cells[0].data, filtered_cells, removed_indices)
-
-    cell_block = meshio.CellBlock('triangle', filtered_cells.cpu())
-
-    return TorchMeshGpu(Mesh(filtered_points.cpu(), [cell_block]), 'target', full_target.dev)
-
-
-def define_plane_from_points(p1, p2, p3):
-    """
-    Defines a plane consisting of three points.
-
-    :param p1: First point on the plane (torch.Tensor of shape (3,)).
-    :type p1: torch.Tensor
-    :param p2: Second point on the plane (torch.Tensor of shape (3,)).
-    :type p2: torch.Tensor
-    :param p3: Third point on the plane (torch.Tensor of shape (3,)).
-    :type p3: torch.Tensor
-    :return: Tuple with two elements:
-        - torch.Tensor: Normal vector of the plane with shape (3,).
-        - float: Constant d in the plane equation.
-    """
-    v1 = p2 - p1
-    v2 = p3 - p1
-
-    normal = torch.linalg.cross(v1, v2)
-    d = -torch.dot(normal, p1)
-
-    return normal, d.item()  # .item() to convert single-element tensor to float
-
-
-def remove_points_above_plane(points, normal, d):
-    """
-    Removes all points from the array that lie above the defined plane.
-
-    :param points: Torch tensor of points with shape (num_points, 3).
-    :type points: torch.Tensor
-    :param normal: Normal vector of the plane with shape (3,).
-    :type normal: torch.Tensor
-    :param d: Constant d in the plane equation.
-    :type d: float
-    :return: Tuple with two elements:
-        - torch.Tensor: Filtered tensor of points that are not above the plane with shape (num_filtered_points, 3).
-        - torch.Tensor: Indices of the removed points (in the 'points' array) with shape (num_removed_points,).
-    """
-    distances = torch.matmul(points, normal) + d
-    mask = distances <= 0
-
-    filtered_points = points[mask]
-    removed_indices = torch.where(~mask)[0]
-
-    return filtered_points, removed_indices
-
-
-def remove_triangles_with_removed_points(triangles, removed_indices):
-    """
-    Removes all triangles that contain at least one removed point.
-
-    :param triangles: Torch tensor of triangles with shape (num_triangles, 3).
-    :type triangles: torch.Tensor
-    :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: torch.Tensor
-    :return: Filtered tensor of triangles that do not contain any removed points with shape (num_filtered_triangles, 3).
-    :rtype: torch.Tensor
-    """
-    mask = torch.tensor([not any(vertex in removed_indices for vertex in triangle) for triangle in triangles],
-                        device=triangles.device)
-
-    filtered_triangles = triangles[mask]
-
-    return filtered_triangles
-
-
-def update_triangle_indices(triangles, filtered_triangles, removed_indices):
-    """
-    Updates the triangle data after points have been removed.
-
-    :param triangles: Torch tensor of original triangles (num_triangles, 3).
-    :type triangles: torch.Tensor
-    :param filtered_triangles: Filtered torch tensor of triangles with shape (num_filtered_triangles, 3).
-    :type filtered_triangles: torch.Tensor
-    :param removed_indices: Indices of the removed points with shape (num_removed_points,).
-    :type removed_indices: torch.Tensor
-    :return: Updated triangle data with shape (num_filtered_triangles, 3).
-    :rtype: torch.Tensor
-    """
-    max_index = torch.max(triangles) + 1
-    index_mapping = torch.zeros(max_index, dtype=torch.int64, device=triangles.device)
-    index_mapping[removed_indices] = -1
-
-    current_index = 0
-    for i in range(len(index_mapping)):
-        if index_mapping[i] != -1:
-            index_mapping[i] = current_index
-            current_index += 1
-
-    updated_triangles = torch.tensor(
-        [[index_mapping[vertex] for vertex in triangle] for triangle in filtered_triangles], device=triangles.device)
-
-    return updated_triangles
+        triangles = self.cells[0].data
+        v0, v1, v2 = self.tensor_points[triangles].unbind(dim=1)
+        edges_a, edges_b = v1 - v0, v2 - v0
+        facet_normals = torch.linalg.cross(edges_a, edges_b, dim=1)
+        facet_normals = facet_normals / torch.norm(facet_normals, dim=1, keepdim=True)
+        self.calculated_facet_normals = True
+        self.cell_data.update({"facet_normals": [facet_normals]})

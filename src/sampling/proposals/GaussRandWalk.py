@@ -11,7 +11,7 @@ class ParameterProposalType(Enum):
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, dev, sigma_mod=0.05, sigma_trans=1.0, sigma_rot=0.01,
+    def __init__(self, batch_size, starting_parameters, dev, sigma_mod=0.05, sigma_trans=10.0, sigma_rot=0.01,
                  chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -40,7 +40,7 @@ class GaussianRandomWalkProposal:
         """
         self.batch_size = batch_size
         self.dev = dev
-        self.parameters = starting_parameters.unsqueeze(1).repeat(1, self.batch_size).to(self.dev)
+        self.parameters = starting_parameters.unsqueeze(1).expand(-1, self.batch_size).to(self.dev)
         self.num_parameters = self.parameters.size()[0]
         self.translation = torch.zeros((3, self.batch_size), device=self.dev)
         self.rotation = torch.zeros((3, self.batch_size), device=self.dev)

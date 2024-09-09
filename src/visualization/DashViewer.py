@@ -156,7 +156,7 @@ class ModelVisualizer:
             inputs
         )
         def update_mesh(*parameters):
-            params = torch.tensor(parameters)
+            params = torch.tensor(parameters, dtype=torch.float32)
             translation = params[-6:-3]
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
@@ -256,7 +256,7 @@ class ChainVisualizer:
             x, y, z = new_torch_mesh.tensor_points.T
             i, j, k = new_torch_mesh.cells[0].data.T
 
-            x_ref, y_ref, z_ref = self.sampler.target_points.T
+            x_ref, y_ref, z_ref = self.sampler.target_points[:, :, batch].T
             i_ref, j_ref, k_ref = self.sampler.target.cells[0].data.T
 
             mesh_figure = go.Mesh3d(

@@ -4,6 +4,7 @@ import torch
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 from torch.distributions import Uniform
 
+from src.sampling.proposals.ClosestPoint import FullClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 
 
@@ -64,8 +65,9 @@ class PDMMetropolisSampler:
         :param batch_mesh: Batch of meshes, which is used to construct the instances defined by the parameters and
         compare them with the target (i.e., calculating the posterior).
         :type batch_mesh: BatchTorchMesh
-        :param target: Observed (partial) shape to be analysed.
-        :type target: TorchMeshGpu
+        :param target: Observed (partial) shape to be analysed. Remark: It is required that the target has the same
+        ‘batch_size’ as ‘batch_mesh’.
+        :type target: BatchTorchMesh
         :param correspondences: Boolean variable that determines whether there are point correspondences between
         references and target.
         :type correspondences: bool
@@ -104,7 +106,8 @@ class PDMMetropolisSampler:
         :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
-        self.proposal.propose(parameter_proposal_type)
+        kwargs = {'batch_mesh': self.batch_mesh} if isinstance(self.proposal, FullClosestPointProposal) else {}
+        self.proposal.propose(parameter_proposal_type, **kwargs)
 
     def update_mesh(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -144,8 +147,7 @@ class PDMMetropolisSampler:
         self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
         if self.correspondences:
-            target_points_expanded = self.target_points.unsqueeze(2).expand(-1, -1, self.proposal.batch_size)
-            differences = torch.sub(self.points, target_points_expanded)
+            differences = torch.sub(self.points, self.target_points)
             # old draft
             # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
@@ -154,7 +156,7 @@ class PDMMetropolisSampler:
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
-            target_clouds = self.target.to_pytorch3d_pointclouds(self.batch_size)
+            target_clouds = self.target.to_pytorch3d_pointclouds()
             # packed representation for faces
             verts_packed = reference_meshes.verts_packed()
             faces_packed = reference_meshes.faces_packed()
@@ -226,10 +228,10 @@ class PDMMetropolisSampler:
         accepted_tot = self.accepted_par + self.accepted_trans + self.accepted_rot
         rejected_tot = self.rejected_par + self.rejected_trans + self.rejected_rot
         ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
-        ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
-        ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
+        #ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
+        #ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
-        return ratio_par, ratio_trans, ratio_rot, ratio_tot
+        return ratio_par, None, None, ratio_tot
 
     def change_device(self, dev):
         """
