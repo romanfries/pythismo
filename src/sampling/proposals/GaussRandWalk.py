@@ -11,7 +11,7 @@ class ParameterProposalType(Enum):
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, dev, sigma_mod=0.05, sigma_trans=10.0, sigma_rot=0.01,
+    def __init__(self, batch_size, starting_parameters, dev, sigma_mod=0.05, sigma_trans=0.1, sigma_rot=0.001,
                  chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model

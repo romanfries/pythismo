@@ -1,12 +1,14 @@
 import math
+
+import meshio
+import numpy as np
 import torch
-import trimesh.base
 from torch.autograd.function import once_differentiable
 from trimesh import Trimesh
 from pytorch3d import _C
 from pytorch3d.loss.point_mesh_distance import _PointFaceDistance, point_face_distance
 
-from src.mesh.TMesh import BatchTorchMesh
+from src.mesh.TMesh import BatchTorchMesh, TorchMeshGpu
 from src.model.PointDistribution import PointDistributionModel, BatchedPointDistributionModel
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType, GaussianRandomWalkProposal
 
@@ -45,6 +47,22 @@ def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
     res_3 = dot > line_norm
 
     return torch.any(~(res_1 | res_2 | res_3), dim=1).squeeze()
+
+
+def extract_bounds_verts(triangular_cells):
+    """
+    Extract the boundary vertices from a triangular mesh defined by face indices.
+
+    :param triangular_cells: A tensor of shape (num_triangles, 3), where each row contains the indices of the vertices
+    that form a triangular face in the mesh.
+    :type triangular_cells: torch.Tensor
+    :return: A 1D tensor containing the unique indices of the boundary vertices. These are the vertices that belong to
+    edges appearing in only one triangle.
+    """
+    target_edges = torch.cat([triangular_cells[:, [0, 1]], triangular_cells[:, [1, 2]], triangular_cells[:, [2, 0]]],
+                             dim=0)
+    target_edges, counts = torch.unique(torch.sort(target_edges, dim=1)[0], dim=0, return_counts=True)
+    return torch.unique(target_edges[counts == 1])
 
 
 def point_face_distance(points, points_first_idx, tris, tris_first_idx, max_points, min_triangle_area=float(5e-3)):
@@ -98,8 +116,8 @@ class ExtendedPointFaceDistance(_PointFaceDistance):
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, dev, reference, batched_reference, target, model,
-                 sigma_mod=1.0, sigma_trans=10.0, sigma_rot=0.01, chain_length_step=1000):
+    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model,
+                 sigma_mod=0.3, sigma_trans=1.0, sigma_rot=0.001, recalculation_period=1000, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -107,13 +125,11 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         This is an informed proposal. The main idea comes from the paper by D. Madsen et al.: "A Closest Point Proposal
         for MCMC-based Probabilistic Surface Registration" and uses a posterior model based on estimated correspondences
         to propose randomized informed samples.
-        However, a simplified version is implemented here. The posterior model is only calculated once at the beginning.
+        However, a simplified version is implemented here. The posterior model is only recalculated every
+        'recalculation_period' steps and a batch element is randomly selected with which the posterior is calculated.
+        Furthermore, to keep the proposal distribution symmetrical, the posterior is centred on the current state.
         A random walk is then performed in this posterior space and the guessed parameters are projected into the prior
         parameter space.
-        Furthermore, to keep the proposal distribution symmetrical, the posterior is centred on the current state. (In
-        this case, the current state equals the starting state, as the posterior model is only calculated once at the
-        beginning.) Here, it is assumed that the start state is the same for all elements of the batch. All elements of
-        the batch work with the exact same posterior model.
         All types of parameters (posterior model and pose) are drawn independently of a Gaussian distribution with mean
         value at the previous parameter value and a standardised variance. The variance is defined separately for all 3
         types of parameters.
@@ -126,16 +142,13 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type starting_parameters: torch.Tensor
         :param dev: An object representing the device on which the tensor operations are or will be allocated.
         :type dev: torch.device
-        :param reference: Single mesh instance. Can contain any points, as these are overwritten during the calculation
-        of the analytic posterior.
-        :type reference: TorchMeshGpu
         :param batched_reference: Current batch with mesh instances generated from the starting parameters. When the
         analytic posterior is calculated, the distances to the target are determined. As the model parameters are the
         same for all elements of the batch, the mesh points must also be the same for every element of the batch.
         :type batched_reference: BatchTorchMesh
-        :param target: Instance to be fitted. Necessary for calculating the analytic posterior. Remark: It is required
+        :param batched_target: Instance to be fitted. Necessary for calculating the analytic posterior. Remark: It is required
         that the target has the same ‘batch_size’ as ‘batch_reference’.
-        :type target: BatchTorchMesh
+        :type batched_target: BatchTorchMesh
         :param model: Prior model, which serves as the starting point for calculating the posterior model.
         :type model: PointDistributionModel
         :param sigma_mod: Variance of the model parameters. Note: May be set larger for this type of proposal compared
@@ -145,21 +158,32 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type sigma_trans: float
         :param sigma_rot: Variance of the rotation parameters.
         :type sigma_rot: float
-        :param chain_length_step: Step size with which the Markov chain is extended. If chain_length_step many
+        :param recalculation_period: The parameter determines after how many iterations the posterior model is
+        recalculated.
+        :type recalculation_period: int
+        :param chain_length_step: Step size with which the Markov chain is extended. If 'chain_length_step' many
         samples were drawn, the chain must be extended again accordingly.
         :type chain_length_step: int
         """
         super().__init__(batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, chain_length_step)
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
-        self.reference = reference.copy()
-        self.target = target
-        self.partial_target = self.target.num_points < self.reference.num_points
+        self.single_shape = TorchMeshGpu(
+            meshio.Mesh(np.zeros((batched_reference.num_points, 3)), batched_reference.cells), 'single_shape', self.dev)
+        self.batched_shapes = batched_reference
+        self.single_target = TorchMeshGpu(
+            meshio.Mesh(np.zeros((batched_target.num_points, 3)), batched_target.cells), 'single_target', self.dev)
+        self.batched_targets = batched_target
+        self.partial_target = self.batched_targets.num_points < self.batched_shapes.num_points
         # self.target = BatchTorchMesh(target, target.id, batch_size=1)
         self.prior_model = model
-        self.posterior_model, self.projection_matrix = self.calculate_posterior_model(batched_reference)
+        self.prior_projection = torch.inverse(
+            self.prior_model.get_components().T @ self.prior_model.get_components()) @ self.prior_model.get_components().T
+        self.posterior_model, self.projection_matrix, self.mean_correction = None, None, None
         self.old_posterior_parameters = None
+        self.recalculation_period = recalculation_period
+        self.counter = 0
 
-    def calculate_posterior_model(self, batched_reference, sigma_n=3.0, sigma_v=100.0):
+    def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
         """
         Executes the calculation of the posterior model.
         In contrast to the algorithm in the paper by D. Madsen et al., all points on the selected current model instance
@@ -168,13 +192,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         size of 1.0, the proposed sample is an independent sample from the calculated posterior.
         The noise of the observations is modeled with low variance along the normal direction and high variance along
         the surface. For this reason, the corresponding facet and vertex normals must be calculated along the way.
-        Remark: Currently only designed to calculate the posterior at the beginning of the sampling process and not
-        optimised for calculation on a GPU. Uses Trimesh, which does not support GPUs.
 
-        :param batched_reference: Current batch with mesh instances generated from the starting parameters. When the
-        analytic posterior is calculated, the distances to the target are determined. As the model parameters are the
-        same for all elements of the batch, the mesh points must also be the same for every element of the batch.
-        :type batched_reference: BatchTorchMesh
         :param sigma_n: Variance along the normal direction.
         :type sigma_n: float
         :param sigma_v: Variance along the surface.
@@ -186,43 +204,55 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :rtype: tuple
         """
         m = self.prior_model.num_points
-        reconstructed_points = batched_reference.tensor_points[:, :, 0].squeeze()
-        self.reference.set_points(reconstructed_points, reset_com=True)
+        # Choose a random element of the batch to be considered for the calculation of the analytic posterior.
+        generator = torch.Generator()
+        generator.manual_seed(torch.initial_seed())
+        rint = torch.randint(0, self.batch_size, (1,), generator=generator)
+        reconstructed_shape_points = self.batched_shapes.tensor_points[:, :, rint].squeeze()
+        self.single_shape.set_points(reconstructed_shape_points, reset_com=True)
+        reconstructed_target_points = self.batched_targets.tensor_points[:, :, rint].squeeze()
+        self.single_target.set_points(reconstructed_target_points, reset_com=True)
 
         # 1: Sample m points {s_i} on the current model instance \Gamma[\alpha].
         # sampled_indexes = torch.tensor(np.random.choice(np.arange(0, self.prior_model.num_points), m, replace=False),
         #                               dtype=torch.int64)
 
         # 2: For every point s_i, i \in [0, ..., m] find the closest point c_i on the target \Gamma_T.
-        # Trimesh doesn't support GPU operations yet. Since this class is designed to calculate only one posterior model
-        # at the beginning of the Markov chain, this runtime disadvantage is negligible.
+        # Alternative calculation using Pytorch3d, which directly returns the squared distance to the next point c_i on
+        # \Gamma_T and the index of the triangle on which this point lies.
+        reference_cloud = self.single_shape.to_pytorch3d_pointclouds()
+        reference_mesh = self.single_shape.to_pytorch3d_meshes()
+        target_mesh = self.single_target.to_pytorch3d_meshes()
 
-        target_mesh = Trimesh(self.target.tensor_points[:, :, 0].cpu(), self.target.cells[0].data.cpu())
-        closest_points, _, _ = target_mesh.nearest.on_surface(self.reference.tensor_points.cpu())
-        closest_points = torch.tensor(closest_points, dtype=torch.float, device=self.dev)
+        verts_packed = target_mesh.verts_packed()
+        faces_packed = target_mesh.faces_packed()
+        tris = verts_packed[faces_packed]  # (T, 3, 3)
+        tris_first_idx = target_mesh.mesh_to_faces_packed_first_idx()
 
+        points = reference_cloud.points_packed()  # (P, 3)
+        points_first_idx = reference_cloud.cloud_to_packed_first_idx()
+        max_points = reference_cloud.num_points_per_cloud().max().item()
+
+        # point to face squared distance: shape (P,)
+        # requires dtype=torch.float32
+        point_to_face, triangle_idx = point_face_distance(points.float(), points_first_idx, tris.float(),
+                                                          tris_first_idx, max_points)
         # All points from the reference are mapped to the closest point of the target, even when they are not observed.
-        # To counter this, all predicted correspondences, where the predicted target point is part of the target
-        # surface's boundary, are removed.
+        # To counter this, all predicted correspondences, where the predicted target point is part of a triangle at the
+        # target surface's boundary, are removed.
         on_boundary = torch.zeros(m, dtype=torch.bool, device=self.dev)
 
         if self.partial_target:
-            outline = target_mesh.outline().entities
-            for line in outline:
-                if isinstance(line, trimesh.path.entities.Line):
-                    boundary_vertices = self.target.tensor_points[:, :, 0][line.nodes]
-                    on_boundary = is_point_on_line_segment(closest_points, boundary_vertices)
+            target_cells = self.single_target.cells[0].data
+            boundary_verts = extract_bounds_verts(target_cells)
+            boundary_mask = (target_cells.unsqueeze(1) == boundary_verts.unsqueeze(0).unsqueeze(-1))
+            boundary_tris = boundary_mask.any(-1).any(-1).nonzero(as_tuple=True)[0]
+            on_boundary = torch.isin(triangle_idx, boundary_tris)
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16
         # differences = closest_points - sampled_points
-        self.reference.calc_facet_normals()
-        mean_vertex_normals = torch.tensor(trimesh.geometry.mean_vertex_normals(self.prior_model.num_points,
-                                                                                self.reference.cells[0].data.cpu(),
-                                                                                self.reference.cell_data[
-                                                                                    "facet_normals"][0].data.cpu()),
-                                           dtype=torch.float, device=self.dev)
-        mean_vertex_normals = mean_vertex_normals / torch.norm(mean_vertex_normals, dim=1, keepdim=True)
+        mean_vertex_normals = reference_mesh.verts_normals_padded().squeeze()
 
         # Calculate 2 perpendicular vectors for each normal to define the \Sigma_{s_{i}}.
         # Select a reference vector that is not parallel to most of the normals.
@@ -230,16 +260,16 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         # To avoid issues where the normal might be parallel to the reference vector
         # we create a matrix to select the next-best vector for those cases.
-        parallel_mask = (torch.abs(mean_vertex_normals @ ref) > 0.9).unsqueeze(1)
+        parallel_mask = (torch.abs(mean_vertex_normals @ ref) > 0.9).unsqueeze(1).repeat(1, 3)
         alt = torch.tensor([0.0, 1.0, 0.0], device=self.dev)
         ref = torch.where(parallel_mask, alt, ref)
 
         # Compute the first tangent vector by taking the cross product of the normal and the reference vector.
-        v1 = torch.cross(mean_vertex_normals, ref.expand_as(mean_vertex_normals), dim=1)
+        v1 = torch.linalg.cross(mean_vertex_normals, ref)
         v1 = v1 / torch.norm(v1, dim=1, keepdim=True)
 
         # Compute the second tangent vector by taking the cross product of the normal and the first tangent.
-        v2 = torch.cross(mean_vertex_normals, v1, dim=1)
+        v2 = torch.linalg.cross(mean_vertex_normals, v1)
         v2 = v2 / torch.norm(v2, dim=1, keepdim=True)
 
         directions = torch.stack((mean_vertex_normals, v1, v2), dim=2)
@@ -247,9 +277,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         covariances = directions @ sigma @ directions.transpose(1, 2)
 
         # 4: Compute the analytic posterior \mathcal{M}_{\alpha} (eq. 10) with L and {\Sigma_{s_{i}}}.
-        mean_prior = self.reference.tensor_points.reshape((3 * m, -1))
+        mean_prior = self.prior_model.mean
         cov_prior = self.prior_model.get_covariance()
-
         cov_reshaped = torch.zeros((3 * m, 3 * m), device=self.dev)
         indices = torch.arange(0, 3 * m, 3, device=self.dev).unsqueeze(1) + torch.arange(3, device=self.dev).unsqueeze(
             0)
@@ -260,12 +289,23 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             cov_prior[indices.flatten()][:, indices.flatten()] + cov_reshaped[indices.flatten()][:,
                                                                  indices.flatten()])
         K_xy = cov_prior[:, indices.flatten()]
+        # current_points = self.batched_shapes.tensor_points.reshape(3 * m, -1, self.batch_size).squeeze()
+        # differences = (current_points - mean_prior)[(~on_boundary.repeat_interleave(3))]
+        # mean_posterior = mean_prior.expand((-1, self.batch_size)) + K_xy @ K_yy_inv @ differences
         cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
-        posterior_model = PointDistributionModel(mean_and_cov=True, mean=mean_prior, cov=cov_posterior,
-                                                 rank=self.prior_model.rank)
-        projection_matrix = torch.diag(1 / torch.sqrt(
-            self.prior_model.get_eigenvalues())) @ self.prior_model.eigenvectors.T @ posterior_model.get_components()
-        return posterior_model, projection_matrix
+
+        posterior_model = BatchedPointDistributionModel(self.batch_size, mean_and_cov=True,
+                                                        mean=self.batched_shapes.tensor_points.reshape(
+                                                            (3 * m, self.batch_size)),
+                                                        # mean=mean_posterior,
+                                                        cov=cov_posterior.unsqueeze(-1).expand(
+                                                            (-1, -1, self.batch_size)),
+                                                        rank=self.prior_model.rank)
+        self.posterior_parameters = torch.zeros(self.prior_model.rank, 1, device=self.dev).repeat(1, self.batch_size)
+        projection_matrix = self.prior_projection @ posterior_model.get_components()[:, :, 0]
+        mean_correction = self.prior_projection @ (posterior_model.mean - self.prior_model.mean)
+        # All posterior models have the same covariance, but different mean values!
+        return posterior_model, projection_matrix, mean_correction
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -274,6 +314,9 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :param parameter_proposal_type: Specifies which parameters are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
+        if self.counter % self.recalculation_period == 0:
+            self.posterior_model, self.projection_matrix, self.mean_correction = self.calculate_posterior_model()
+
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
@@ -286,14 +329,15 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             self.posterior_parameters = self.posterior_parameters + perturbations * self.sigma_mod
-            self.parameters = self.projection_matrix @ self.posterior_parameters
+            self.parameters = self.projection_matrix @ self.posterior_parameters + self.mean_correction
+            # TODO: Change parameter d to not only draw pure random samples of the posterior.
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.translation = self.translation + perturbations * self.sigma_trans * math.sqrt(
                 (1 / self.prior_model.num_points))
         else:
             self.rotation = self.rotation + perturbations * self.sigma_rot
-        # self.parameters = torch.zeros((self.num_parameters, self.batch_size))
-        # self.parameters = perturbations * self.sigma_mod
+
+        self.counter += 1
 
     def update_parameters(self, decider):
         """
@@ -327,17 +371,22 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             return
         else:
             self.parameters = self.parameters.to(dev)
+            self.posterior_parameters = self.posterior_parameters.to(dev)
             self.translation = self.translation.to(dev)
             self.rotation = self.rotation.to(dev)
             self.chain = self.chain.to(dev)
             self.posterior = self.posterior.to(dev)
+            self.projection_matrix = self.projection_matrix.to(dev)
+            self.mean_correction = self.mean_correction.to(dev)
+            self.prior_projection = self.prior_projection.to(dev)
+            self.projection_matrix = self.projection_matrix.to(dev)
 
-            self.posterior_parameters = self.posterior_parameters.to(dev)
-            self.reference.change_device(dev)
-            self.target.change_device(dev)
+            self.single_shape.change_device(dev)
+            self.batched_shapes.change_device(dev)
+            self.single_target.change_device(dev)
+            self.batched_targets.change_device(dev)
             self.prior_model.change_device(dev)
             self.posterior_model.change_device(dev)
-            self.projection_matrix = self.projection_matrix.to(dev)
 
             self.dev = dev
 
@@ -404,7 +453,7 @@ class FullClosestPointProposal(GaussianRandomWalkProposal):
         self.recalculation_period = recalculation_period
         self.counter = 0
 
-    def calculate_posterior_model(self, batched_reference, sigma_n=3.0, sigma_v=100.0):
+    def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
         """
         Executes the calculation of the posterior model.
         In contrast to the algorithm in the paper by D. Madsen et al., all points on the current model instances
@@ -414,8 +463,6 @@ class FullClosestPointProposal(GaussianRandomWalkProposal):
         The noise of the observations is modeled with low variance along the normal direction and high variance along
         the surface. For this reason, the corresponding vertex normals must be calculated along the way.
 
-        :param batched_reference: Meshes that are generated from the current model parameters.
-        :type batched_reference: BatchTorchMesh
         :param sigma_n: Variance along the normal direction.
         :type sigma_n: float
         :param sigma_v: Variance along the surface.
@@ -429,7 +476,7 @@ class FullClosestPointProposal(GaussianRandomWalkProposal):
         """
         self.posterior_parameters = torch.zeros(self.prior_model.rank, 1, device=self.dev).expand(-1, self.batch_size)
         m = self.prior_model.num_points
-        reconstructed_points = batched_reference.tensor_points
+        reconstructed_points = self.batched_reference.tensor_points
 
         # 1: Sample m points {s_i} on the current model instance \Gamma[\alpha].
         # In this implementation, all the points on \Gamma[\alpha] are chosen.
@@ -502,7 +549,8 @@ class FullClosestPointProposal(GaussianRandomWalkProposal):
         K_yy_batch = torch.zeros((3 * torch.max(torch.sum(~on_boundary, dim=0)),
                                   3 * torch.max(torch.sum(~on_boundary, dim=0)), self.batch_size), device=self.dev)
         observed_idx = torch.nonzero(~on_boundary, as_tuple=False)
-        y2_idx = torch.stack([3 * observed_idx[:, 0], 3 * observed_idx[:, 0] + 1, 3 * observed_idx[:, 0] + 2], dim=1).flatten()
+        y2_idx = torch.stack([3 * observed_idx[:, 0], 3 * observed_idx[:, 0] + 1, 3 * observed_idx[:, 0] + 2],
+                             dim=1).flatten()
         batch2_idx = observed_idx[:, 1].repeat_interleave(3)
         K_xy_gather = cov_prior[:, y2_idx, batch2_idx]
         cov_reshaped += cov_prior
@@ -528,20 +576,16 @@ class FullClosestPointProposal(GaussianRandomWalkProposal):
             1 / torch.sqrt(prior_eigenvalues)) @ prior_eigenvectors @ posterior_components
         return posterior_model, projection_matrices.permute(1, 2, 0)
 
-    def propose(self, parameter_proposal_type: ParameterProposalType, **kwargs):
+    def propose(self, parameter_proposal_type: ParameterProposalType):
         """
         Updates the parameter values using a Gaussian random walk in posterior space (see class description).
 
         :param parameter_proposal_type: Specifies which parameters are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
-        :param kwargs: Additional keyword arguments that include:
-            - batch_mesh (BatchTorchMesh): Meshes that are generated from the current model parameters.
-        :type kwargs: dict
         """
 
         if self.counter % self.recalculation_period == 0:
-            self.posterior_model, self.projection_matrix = self.calculate_posterior_model(
-                kwargs.get('batch_mesh', self.batched_reference))
+            self.posterior_model, self.projection_matrix = self.calculate_posterior_model()
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)

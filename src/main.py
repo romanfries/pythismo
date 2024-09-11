@@ -1,13 +1,10 @@
 from pathlib import Path
 import os
 
-import meshio
-import numpy as np
 import torch
-from trimesh import Trimesh
 
 import custom_io
-from model.PointDistribution import PointDistributionModel, BatchedPointDistributionModel, extract_points
+from model.PointDistribution import PointDistributionModel
 from src.registration.IterativeClosestPoints import ICPAnalyser, ICPMode
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
@@ -19,16 +16,16 @@ from visualization.DashViewer import MainVisualizer
 # Important notes for running Pytorch3d on Windows:
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
-device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-read_in = False
+read_in = True
 simplify = False
 path_mesh = "datasets/femur-data/project-data/registered"
 path_model = "datasets/femur-data/project-data/models"
 path_reference = "datasets/femur-data/project-data/reference-decimated"
 
 BATCH_SIZE = 2
-CHAIN_LENGTH = 0
+CHAIN_LENGTH = 10001
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 1.0
@@ -56,9 +53,9 @@ def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=Fa
             curr_shape = meshes[0]
         batched_model = model.get_batched_pdm(BATCH_SIZE)
     # Manually determined landmark points to create a partial target
-    target = curr_shape.copy() \
-        .set_points(model.get_points_from_parameters(2.0 * torch.ones(model.rank, device=dev)), reset_com=True) \
-        .partial_shape(23, 4982, 0.5)
+    target = curr_shape.copy()
+    target.set_points(model.get_points_from_parameters(1.5 * torch.ones(model.rank, device=dev)), reset_com=True)
+    target = target.partial_shape(4, 199, 0.5)
     batched_target = BatchTorchMesh(target, 'target', dev, BATCH_SIZE)
     params = torch.zeros(model.rank, device=dev)
     batch_params = params.unsqueeze(-1).expand(-1, BATCH_SIZE)
@@ -68,7 +65,7 @@ def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=Fa
         random_walk = GaussianRandomWalkProposal(BATCH_SIZE, params, dev)
         sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
     elif proposal_type == "CP_SIMPLE":
-        random_walk = ClosestPointProposal(BATCH_SIZE, params, dev, curr_shape, batched_curr_shape, batched_target,
+        random_walk = ClosestPointProposal(BATCH_SIZE, params, dev, batched_curr_shape, batched_target,
                                            model)
         sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
     elif proposal_type == "CP_FULL":
@@ -91,7 +88,7 @@ def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=Fa
         sampler.determine_quality(proposal)
         sampler.decide(proposal)
 
-    return batch_m, model, sampler
+    return batched_curr_shape, model, sampler
 
 
 class Main:
@@ -108,9 +105,9 @@ if __name__ == "__main__":
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
     visualizer = MainVisualizer(batched_reference, model, sampler)
-    # acceptance_ratios = sampler.acceptance_ratio()
-    print("Acceptance Ratios:")
-    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
-    # for desc, val in zip(strings, acceptance_ratios):
-    #    print(f"{desc}: {val:.4f}")
+#    acceptance_ratios = sampler.acceptance_ratio()
+#    print("Acceptance Ratios:")
+#    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
+#    for desc, val in zip(strings, acceptance_ratios):
+#        print(f"{desc}: {val:.4f}")
     visualizer.run()

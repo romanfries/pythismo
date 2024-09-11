@@ -340,6 +340,26 @@ class PointDistributionModel:
         """
         return self.components[:, k]
 
+    def get_eigenvectors(self):
+        """
+        Returns all eigenvectors of the PDM.
+
+        :return: All ('rank' many) eigenvectors of the PDM with shape (3 * num_points, rank).
+        :rtype: torch.Tensor
+        """
+        return self.eigenvectors
+
+    def get_eigenvector_k(self, k):
+        """
+        Returns the kth eigenvector of the PDM.
+
+        :param k: Specifies which eigenvector is to be returned.
+        :type k: int
+        :return: The kth eigenvector of the PDM with shape (3 * num_points,).
+        :rtype: torch.Tensor
+        """
+        return self.eigenvectors[:, k]
+
     def get_points_from_parameters(self, parameters):
         """
         Takes model parameters and calculates the coordinates of all points of the instance defined by these parameters.
@@ -617,7 +637,7 @@ class BatchedPointDistributionModel(PointDistributionModel):
 
         :param k: Specifies which eigenvalue is to be returned.
         :type k: int
-        :return: The kth largest eigenvalue with shape (1, batch_size).
+        :return: The kth largest eigenvalue with shape (batch_size,).
         :rtype: torch.Tensor
         """
         return self.eigenvalues[k, :]
@@ -629,7 +649,18 @@ class BatchedPointDistributionModel(PointDistributionModel):
 
         :param k: Specifies which component is to be returned.
         :type k: int
-        :return: The kth component of the PDM with shape (3 * num_points, 1, batch_size).
+        :return: The kth component of the PDM with shape (3 * num_points, batch_size).
+        :rtype: torch.Tensor
+        """
+        return self.components[:, k, :]
+
+    def get_eigenvalue_k(self, k):
+        """
+        Returns the kth eigenvalue of all the PDMs.
+
+        :param k: Specifies which eigenvector is to be returned.
+        :type k: int
+        :return: The kth eigenvector of the PDM with shape (3 * num_points, batch_size).
         :rtype: torch.Tensor
         """
         return self.components[:, k, :]

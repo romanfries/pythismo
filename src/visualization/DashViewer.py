@@ -243,7 +243,7 @@ class ChainVisualizer:
             prevent_initial_call=True
         )
         def update_display(batch, chain_element):
-            params = torch.tensor(self.parameters[:, batch, chain_element])
+            params = self.parameters[:, batch, chain_element]
             translation = params[-6:-3]
             rotation = params[-3:]
             points = self.sampler.model.get_points_from_parameters(params[:-6])

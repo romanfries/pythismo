@@ -252,6 +252,21 @@ class TorchMeshGpu(Mesh):
         points = self.tensor_points.unsqueeze(0).expand(batch_size, -1, -1)
         return pytorch3d.structures.Pointclouds(points)
 
+    def to_pytorch3d_meshes(self, batch_size=1):
+        """
+        Helper method to translate a given TorchMeshGpu into a pytorch3d.structures.Meshes object.
+        The Meshes class provides functions for working with batches of triangulated meshes with varying numbers of
+        faces and vertices, and converting between representations.
+        However, the generated Meshes object here is more restricted, because the meshes in the BatchTorchMesh instance
+        are all exactly the same.
+
+        :return: Above described Meshes object.
+        :rtype: pytorch3d.structures.Meshes
+        """
+        verts = self.tensor_points.unsqueeze(0).expand(batch_size, -1, -1)
+        faces = self.cells[0].data.unsqueeze(0).expand(batch_size, -1, -1)
+        return pytorch3d.structures.Meshes(verts, faces)
+
     def calc_facet_normals(self):
         """
         (Re-)Calculates the unit-length normal vectors to the triangular surfaces of the mesh.
@@ -296,9 +311,10 @@ class TorchMeshGpu(Mesh):
         :return: Partial shape as a TorchMeshGpu instance.
         :rtype: TorchMeshGpu
         """
-        plane_normal = self.tensor_points[idx1, :] - self.tensor_points[idx2, :]
-        plane_origin = self.tensor_points[idx2, :] + ratio_observed * plane_normal
-        mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin, plane_normal)
+        plane_normal = (self.tensor_points[idx1, :] - self.tensor_points[idx2, :])
+        plane_origin = (self.tensor_points[idx2, :] + ratio_observed * plane_normal)
+        mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin.cpu(),
+                                                                                           plane_normal.cpu())
         return TorchMeshGpu(
             meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
             'partial_shape', self.dev)
@@ -453,7 +469,7 @@ class BatchTorchMesh(TorchMeshGpu):
         points = torch.permute(self.tensor_points, (2, 0, 1))
         return pytorch3d.structures.Pointclouds(points)
 
-    def to_pytorch3d_meshes(self):
+    def to_pytorch3d_meshes(self, batch_size=1):
         """
         Helper method to translate a given BatchTorchMesh into a pytorch3d.structures.Meshes object.
         The Meshes class provides functions for working with batches of triangulated meshes with varying numbers of
@@ -479,3 +495,14 @@ class BatchTorchMesh(TorchMeshGpu):
         facet_normals = facet_normals / torch.norm(facet_normals, dim=1, keepdim=True)
         self.calculated_facet_normals = True
         self.cell_data.update({"facet_normals": [facet_normals]})
+
+    def partial_shape(self, idx1, idx2, ratio_observed):
+        """
+        This method should not be used for BatchTorchMesh instances.
+
+        :param idx1:
+        :param idx2:
+        :param ratio_observed:
+        """
+        warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
+                      UserWarning)
