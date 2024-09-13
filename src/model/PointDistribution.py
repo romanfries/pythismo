@@ -127,6 +127,24 @@ def gaussian_pdf(x, mean=0.0, sigma=1.0):
     return normalization * exponent
 
 
+def unnormalised_log_gaussian_pdf(x, mean=0.0, sigma=1.0):
+    """
+    Calculates the unnormalised log-likelihood of points in 1-dimensional space assuming a Gaussian distribution,
+    defined by the input parameters ‘mean’ and ‘covariance’. Supports batched input points.
+
+    :param x: Tensor of points whose likelihoods are to be calculated with shape (num_points, batch_size).
+    :type x: torch.Tensor
+    :param mean: Mean value of the normal distribution.
+    :type mean: float
+    :param sigma: Variance of the normal distribution.
+    :type sigma: float
+    :return: Tensor with likelihoods of the input points assuming the given parameters with the same shape as 'x', i.e.,
+    (num_points, batch_size).
+    :rtype: torch.Tensor
+    """
+    return torch.sum(-0.5 * ((x - mean) ** 2) / (sigma ** 2), dim=0)
+
+
 def batch_multivariate_gaussian_pdf(k, points, mean, covariance):
     """
     Calculates the likelihood of points in k-dimensional space assuming a multivariate Gaussian distribution, defined by
