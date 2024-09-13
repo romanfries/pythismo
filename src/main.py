@@ -26,11 +26,11 @@ path_model = "datasets/femur-data/project-data/models"
 path_reference = "datasets/femur-data/project-data/reference-decimated"
 
 BATCH_SIZE = 5
-CHAIN_LENGTH = 200001
+CHAIN_LENGTH = 10001
 DECIMATION_TARGET = 1000
 
-MODEL_PROBABILITY = 1.0
-TRANSLATION_PROBABILITY = 0.0
+MODEL_PROBABILITY = 0.6
+TRANSLATION_PROBABILITY = 0.4
 ROTATION_PROBABILITY = 0.0
 
 proposal_type = "CP_SIMPLE"

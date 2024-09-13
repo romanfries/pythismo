@@ -124,15 +124,17 @@ class PDMMetropolisSampler:
             if self.batch_size == 1:
                 reconstructed_points = reconstructed_points.unsqueeze(2)
             self.batch_mesh.set_points(reconstructed_points)
-            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
             self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters())
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
             self.batch_mesh.old_points = old_points
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.batch_mesh.apply_translation(-self.proposal.old_translation)
             self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
         else:
+            self.batch_mesh.apply_translation(-self.proposal.get_translation_parameters())
             self.batch_mesh.apply_rotation(-self.proposal.old_rotation)
             self.batch_mesh.apply_rotation(self.proposal.get_rotation_parameters())
+            self.batch_mesh.apply_translation(self.proposal.get_translation_parameters())
         self.batch_mesh.old_points = old_points
         self.points = self.batch_mesh.tensor_points
 
@@ -228,8 +230,10 @@ class PDMMetropolisSampler:
         accepted_tot = self.accepted_par + self.accepted_trans + self.accepted_rot
         rejected_tot = self.rejected_par + self.rejected_trans + self.rejected_rot
         ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
-        ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
-        ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
+        #ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
+        ratio_rot = 0.0
+        ratio_trans = 0.0
+        #ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
         return ratio_par, ratio_trans, ratio_rot, ratio_tot
 

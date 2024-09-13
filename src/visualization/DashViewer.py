@@ -251,8 +251,8 @@ class ChainVisualizer:
                                                                      self.sampler.batch_mesh.cells[
                                                                          0].data.numpy())])
             new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
-            new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
+            new_torch_mesh.apply_translation(translation)
             x, y, z = new_torch_mesh.tensor_points.T
             i, j, k = new_torch_mesh.cells[0].data.T
 

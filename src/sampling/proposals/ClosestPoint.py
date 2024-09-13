@@ -117,7 +117,7 @@ class ExtendedPointFaceDistance(_PointFaceDistance):
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
     def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model,
-                 sigma_mod=1.0, sigma_trans=10.0, sigma_rot=0.001, recalculation_period=1000, chain_length_step=1000):
+                 sigma_mod=1.0, sigma_trans=10.0, sigma_rot=0.001, recalculation_period=100, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -298,9 +298,9 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         mean_posterior = mean_prior.expand((-1, self.batch_size)) + K_xy @ K_yy_inv @ differences
         cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
         posterior_model = BatchedPointDistributionModel(self.batch_size, mean_and_cov=True,
-                                                        # mean=batched_shape.tensor_points.reshape(
-                                                        #    (3 * m, self.batch_size)),
-                                                        mean=mean_posterior,
+                                                        mean=batched_shape.tensor_points.reshape(
+                                                            (3 * m, self.batch_size)),
+                                                        # mean=mean_posterior,
                                                         cov=cov_posterior.unsqueeze(-1).expand(
                                                             (-1, -1, self.batch_size)),
                                                         rank=self.prior_model.rank)
@@ -308,7 +308,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         projection_matrix = self.prior_projection @ posterior_model.get_components()[:, :, 0]
         mean_correction = (self.prior_projection @ (posterior_model.mean - mean_prior))
         # All posterior models have the same covariance, but different mean values!
-        return posterior_model, projection_matrix
+        return posterior_model, projection_matrix, mean_correction
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -318,10 +318,10 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type parameter_proposal_type: ParameterProposalType
         """
         if self.counter % self.recalculation_period == 0:
-            self.posterior_model, self.projection_matrix = self.calculate_posterior_model()
+            self.posterior_model, self.projection_matrix, self.mean_correction = self.calculate_posterior_model()
 
-        self.mean_correction = (self.prior_projection @ (self.posterior_model.mean - self.prior_model.mean))
-        # self.mean_correction = (self.prior_projection @ (self.posterior_model.mean - self.prior_model.mean + self.rotation.repeat(self.prior_model.num_points, 1)))
+        # self.mean_correction = (self.prior_projection @ (self.posterior_model.mean - self.prior_model.mean))
+        # self.mean_correction = (self.prior_projection @ (self.posterior_model.mean - self.prior_model.mean + self.translation.repeat(self.prior_model.num_points, 1)))
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
@@ -383,7 +383,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.chain = self.chain.to(dev)
             self.posterior = self.posterior.to(dev)
             self.projection_matrix = self.projection_matrix.to(dev)
-            self.mean_correction = self.mean_correction.to(dev)
+            # self.mean_correction = self.mean_correction.to(dev)
             self.prior_projection = self.prior_projection.to(dev)
             self.projection_matrix = self.projection_matrix.to(dev)
 
