@@ -316,7 +316,7 @@ class TorchMeshGpu(Mesh):
         mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin.cpu(),
                                                                                            plane_normal.cpu())
         return TorchMeshGpu(
-            meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
+            meshio.Mesh(np.array((mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
             'partial_shape', self.dev)
 
 

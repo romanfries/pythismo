@@ -212,8 +212,8 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
     :return: Tensor with unnormalised log posterior values of the references considered with shape (batch_size,).
     :rtype: torch.Tensor
     """
-    likelihoods = batch_multivariate_gaussian_pdf(3, differences, torch.zeros(3, dtype=torch.float64),
-                                                  torch.diag(sigma_lm * torch.ones(3, dtype=torch.float64)))
+    likelihoods = batch_multivariate_gaussian_pdf(3, differences, torch.zeros(3, dtype=torch.float32),
+                                                  torch.diag(sigma_lm * torch.ones(3, dtype=torch.float32)))
     log_likelihoods = torch.log(likelihoods)
     prior = gaussian_pdf(parameters, sigma=sigma_prior)
     log_prior = torch.log(prior)
@@ -383,7 +383,7 @@ class PointDistributionModel:
         else:
             return stacked_points.reshape((-1, 3, batch_size))
 
-    def decimate(self, decimation_target=200):
+    def decimate(self, ref, decimation_target=200):
         """
         Reduces the PDM to the specified number of points. Currently, only calculated PDMs can be reduced, i.e. if
         ‘mean_and_cov'='read_in'=False.
@@ -398,7 +398,7 @@ class PointDistributionModel:
         if self.read_in or self.mean_and_cov:
             warnings.warn("Warning: Decimation of imported Point Distribution Models is not (yet) supported.",
                           UserWarning)
-            return None
+            # return None
 
         if self.num_points <= decimation_target:
             warnings.warn("Warning: No decimation necessary, as the target is below the current number of points.",
@@ -410,7 +410,8 @@ class PointDistributionModel:
                           UserWarning)
             return None
 
-        reference_decimated = self.meshes[0].simplify_qem(decimation_target)
+        # reference_decimated = self.meshes[0].simplify_qem(decimation_target)
+        reference_decimated = ref.simplify_qem(decimation_target)
         mean_fun, cov_fun = self.pdm_to_interpolated_gp(decimation_target)
         mean, cov = mean_fun(reference_decimated.tensor_points), cov_fun(reference_decimated.tensor_points,
                                                                          reference_decimated.tensor_points)

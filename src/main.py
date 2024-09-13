@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 
 import torch
+from tqdm import tqdm
 
 import custom_io
 from model.PointDistribution import PointDistributionModel
@@ -19,20 +20,20 @@ from visualization.DashViewer import MainVisualizer
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 read_in = True
-simplify = False
+simplify = True
 path_mesh = "datasets/femur-data/project-data/registered"
 path_model = "datasets/femur-data/project-data/models"
 path_reference = "datasets/femur-data/project-data/reference-decimated"
 
-BATCH_SIZE = 2
-CHAIN_LENGTH = 10001
-DECIMATION_TARGET = 200
+BATCH_SIZE = 5
+CHAIN_LENGTH = 200001
+DECIMATION_TARGET = 1000
 
 MODEL_PROBABILITY = 1.0
 TRANSLATION_PROBABILITY = 0.0
 ROTATION_PROBABILITY = 0.0
 
-proposal_type = "GAUSS_RAND"
+proposal_type = "CP_SIMPLE"
 
 
 def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=False, simplify_model=False):
@@ -54,8 +55,8 @@ def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=Fa
         batched_model = model.get_batched_pdm(BATCH_SIZE)
     # Manually determined landmark points to create a partial target
     target = curr_shape.copy()
-    target.set_points(model.get_points_from_parameters(1.5 * torch.ones(model.rank, device=dev)), reset_com=True)
-    target = target.partial_shape(4, 199, 0.5)
+    target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
+    target = target.partial_shape(4, 195, 0.5)
     batched_target = BatchTorchMesh(target, 'target', dev, BATCH_SIZE)
     params = torch.zeros(model.rank, device=dev)
     batch_params = params.unsqueeze(-1).expand(-1, BATCH_SIZE)
@@ -73,10 +74,11 @@ def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=Fa
                                                batched_model)
         sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
 
-    # icp = ICPAnalyser(batched_target, batched_curr_shape, mode=ICPMode.BATCHED)
+    icp = ICPAnalyser(batched_target, batched_curr_shape, mode=ICPMode.BATCHED)
     generator = torch.Generator(device=dev)
-    for i in range(CHAIN_LENGTH):
-        # icp.icp()
+    for i in tqdm(range(CHAIN_LENGTH)):
+        if CHAIN_LENGTH % 1000 == 0:
+            icp.icp()
         random = torch.rand(1, device=dev, generator=generator).item()
         if random < MODEL_PROBABILITY:
             proposal = ParameterProposalType.MODEL
@@ -105,9 +107,9 @@ if __name__ == "__main__":
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
     visualizer = MainVisualizer(batched_reference, model, sampler)
-#    acceptance_ratios = sampler.acceptance_ratio()
-#    print("Acceptance Ratios:")
-#    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
-#    for desc, val in zip(strings, acceptance_ratios):
-#        print(f"{desc}: {val:.4f}")
+    acceptance_ratios = sampler.acceptance_ratio()
+    print("Acceptance Ratios:")
+    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
+    for desc, val in zip(strings, acceptance_ratios):
+        print(f"{desc}: {val:.4f}")
     visualizer.run()
