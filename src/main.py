@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 import os
 
 import torch
 from tqdm import tqdm
 
+# TODO: Organise imports.
 import custom_io
-from model.PointDistribution import PointDistributionModel
+from model.PointDistribution import PointDistributionModel, distance_to_closest_point
+from src.analysis.Analyser import ChainAnalyser
 from src.registration.IterativeClosestPoints import ICPAnalyser, ICPMode
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
@@ -17,99 +20,125 @@ from visualization.DashViewer import MainVisualizer
 # Important notes for running Pytorch3d on Windows:
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-read_in = True
-simplify = True
-path_mesh = "datasets/femur-data/project-data/registered"
-path_model = "datasets/femur-data/project-data/models"
-path_reference = "datasets/femur-data/project-data/reference-decimated"
+READ_IN = False
+SIMPLIFY = True
+REL_PATH_MESH = "datasets/femur-data/project-data/registered"
+REL_PATH_MODEL = "datasets/femur-data/project-data/models"
+REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
 
-BATCH_SIZE = 5
-CHAIN_LENGTH = 10001
-DECIMATION_TARGET = 1000
+REL_OUTPUT_DIR = "datasets/output"
+
+BATCH_SIZE = 20
+CHAIN_LENGTH = 22000
+DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-proposal_type = "CP_SIMPLE"
+PROPOSAL_TYPE = "GAUSS_RAND"
+
+SIGMA_MOD_GAUSS = 0.05
+SIGMA_MOD_CP = 0.2
+# Variance (in square millimetres) in the CP is divided by the square root of the number of model points N to calculate
+# the actual variance of the perturbations.
+SIGMA_TRANS_GAUSS = 0.1
+SIGMA_TRANS_CP = 10.0
+# Variance in radians
+SIGMA_ROT = 0.001
+
+CP_D = 1.0
+CP_RECALCULATION_PERIOD = 100
+
+PERCENTAGES_OBSERVED_LENGTH = [0.2, 0.4, 0.6, 0.8, 1.0]
 
 
-def run(dev, mesh_path=None, reference_path=None, model_path=None, read_model=False, simplify_model=False):
+def run():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-    if read_model:
-        rel_model_path = Path(model_path)
+    if READ_IN:
+        rel_model_path = Path(REL_PATH_MODEL)
         model_path = Path.cwd().parent / rel_model_path
         model_reader = ModelReader(model_path)
-        curr_shape = custom_io.read_meshes(reference_path, dev)[0][0]
-        model = model_reader.get_model(dev)
-        batched_model = model.get_batched_pdm(BATCH_SIZE)
+        curr_shape = custom_io.read_meshes(REL_PATH_REFERENCE, DEVICE)[0][0]
+        model = model_reader.get_model(DEVICE)
+
     else:
-        meshes, _ = custom_io.read_meshes(mesh_path, dev)
-        model = PointDistributionModel(meshes=meshes)
-        if simplify_model:
-            curr_shape = model.decimate(DECIMATION_TARGET)
-        else:
-            curr_shape = meshes[0]
-        batched_model = model.get_batched_pdm(BATCH_SIZE)
-    # Manually determined landmark points to create a partial target
-    target = curr_shape.copy()
-    target.set_points(model.get_points_from_parameters(1.0 * torch.ones(model.rank, device=dev)), reset_com=True)
-    target = target.partial_shape(4, 195, 0.5)
-    batched_target = BatchTorchMesh(target, 'target', dev, BATCH_SIZE)
-    params = torch.zeros(model.rank, device=dev)
-    batch_params = params.unsqueeze(-1).expand(-1, BATCH_SIZE)
-    curr_shape.set_points(model.get_points_from_parameters(params), reset_com=True)
-    batched_curr_shape = BatchTorchMesh(curr_shape, 'current_shapes', dev, BATCH_SIZE)
-    if proposal_type == "GAUSS_RAND":
-        random_walk = GaussianRandomWalkProposal(BATCH_SIZE, params, dev)
-        sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
-    elif proposal_type == "CP_SIMPLE":
-        random_walk = ClosestPointProposal(BATCH_SIZE, params, dev, batched_curr_shape, batched_target,
-                                           model)
-        sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
-    elif proposal_type == "CP_FULL":
-        random_walk = FullClosestPointProposal(BATCH_SIZE, batch_params, dev, batched_curr_shape, batched_target,
-                                               batched_model)
-        sampler = PDMMetropolisSampler(model, random_walk, batched_curr_shape, batched_target, correspondences=False)
+        # LOOCV (Leave-One-Out Cross-Validation) procedure
+        meshes, _ = custom_io.read_meshes(REL_PATH_MESH, DEVICE)
+        for percentage in PERCENTAGES_OBSERVED_LENGTH:
+            for l in range(len(meshes)):
+                target = meshes[l]
+                full_target = target.simplify_qem(DECIMATION_TARGET)
+                z_min, z_max = torch.min(full_target.tensor_points, dim=0)[1][2].item(), \
+                torch.max(full_target.tensor_points, dim=0)[1][2].item()
+                part_target = full_target.partial_shape(z_max, z_min, 1 - percentage)
+                dists = distance_to_closest_point(full_target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
+                observed = (dists < 1e-6).squeeze()
+                del meshes[l]
+                model = PointDistributionModel(meshes=meshes)
+                # LATER
+                # meshes.insert(l, target)
+                shape = model.decimate(DECIMATION_TARGET)
+                batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
+                starting_params = torch.zeros(model.rank, device=DEVICE)
+                shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
+                batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
+                if PROPOSAL_TYPE == "GAUSS_RAND":
+                    random_walk = GaussianRandomWalkProposal(BATCH_SIZE, starting_params, DEVICE, SIGMA_MOD_GAUSS,
+                                                             SIGMA_TRANS_GAUSS, SIGMA_ROT)
+                elif PROPOSAL_TYPE == "CP_SIMPLE":
+                    random_walk = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape,
+                                                       batched_target,
+                                                       model, SIGMA_MOD_CP, SIGMA_TRANS_CP, SIGMA_ROT, CP_D,
+                                                       CP_RECALCULATION_PERIOD)
+                sampler = PDMMetropolisSampler(model, random_walk, batched_shape, batched_target, correspondences=False,
+                                               save_full_mesh_chain=True, save_residuals=True)
+                # The fact that the meshes used are already registered can be used here.
+                # icp = ICPAnalyser(batched_target, batched_shape, mode=ICPMode.BATCHED)
+                # icp.icp()
+                generator = torch.Generator(device=DEVICE)
+                for i in tqdm(range(CHAIN_LENGTH)):
+                    random = torch.rand(1, device=DEVICE, generator=generator).item()
+                    if random < MODEL_PROBABILITY:
+                        proposal = ParameterProposalType.MODEL
+                    elif MODEL_PROBABILITY <= random < MODEL_PROBABILITY + TRANSLATION_PROBABILITY:
+                        proposal = ParameterProposalType.TRANSLATION
+                    else:
+                        proposal = ParameterProposalType.ROTATION
+                    sampler.propose(proposal)
+                    sampler.determine_quality(proposal)
+                    sampler.decide(proposal, full_target)
 
-    icp = ICPAnalyser(batched_target, batched_curr_shape, mode=ICPMode.BATCHED)
-    generator = torch.Generator(device=dev)
-    for i in tqdm(range(CHAIN_LENGTH)):
-        if CHAIN_LENGTH % 1000 == 0:
-            icp.icp()
-        random = torch.rand(1, device=dev, generator=generator).item()
-        if random < MODEL_PROBABILITY:
-            proposal = ParameterProposalType.MODEL
-        elif MODEL_PROBABILITY <= random < MODEL_PROBABILITY + TRANSLATION_PROBABILITY:
-            proposal = ParameterProposalType.TRANSLATION
-        else:
-            proposal = ParameterProposalType.ROTATION
-        sampler.propose(proposal)
-        sampler.determine_quality(proposal)
-        sampler.decide(proposal)
+                # batched_curr_shape.change_device(torch.device("cpu"))
+                # model.change_device(torch.device("cpu"))
+                # sampler.change_device(torch.device("cpu"))
+                # visualizer = MainVisualizer(batched_curr_shape, model, sampler)
+                # visualizer.run()
 
-    return batched_curr_shape, model, sampler
-
-
-class Main:
-    def __init__(self):
-        self.device = device
+                analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
+                data = analyser.data_to_json(l, int(100 * percentage))
+                meshes.insert(l, target)
+                # TODO: Write proper output writer class.
+                output_dir = Path.cwd().parent / Path(REL_OUTPUT_DIR)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_filename = f'output_data_{l}_{int(100 * percentage)}.json'
+                output_file = output_dir / output_filename
+                with open(output_file, 'w') as f:
+                    json.dump(data, f, indent=4)
 
 
 if __name__ == "__main__":
     # torch.set_default_tensor_type(torch.cuda.FloatTensor)
-    main = Main()
-    dev = main.device
-    batched_reference, model, sampler = run(dev, path_mesh, path_reference, path_model, read_in, simplify)
-    batched_reference.change_device(torch.device("cpu"))
-    model.change_device(torch.device("cpu"))
-    sampler.change_device(torch.device("cpu"))
-    visualizer = MainVisualizer(batched_reference, model, sampler)
-    acceptance_ratios = sampler.acceptance_ratio()
-    print("Acceptance Ratios:")
-    strings = ['Parameters', 'Translation', 'Rotation', 'Total']
-    for desc, val in zip(strings, acceptance_ratios):
-        print(f"{desc}: {val:.4f}")
-    visualizer.run()
+    run()
+    # batched_reference.change_device(torch.device("cpu"))
+    # model.change_device(torch.device("cpu"))
+    # sampler.change_device(torch.device("cpu"))
+    # visualizer = MainVisualizer(batched_reference, model, sampler)
+    # acceptance_ratios = sampler.acceptance_ratio()
+    # print("Acceptance Ratios:")
+    # strings = ['Parameters', 'Translation', 'Rotation', 'Total']
+    # for desc, val in zip(strings, acceptance_ratios):
+    #    print(f"{desc}: {val:.4f}")
+    # visualizer.run()

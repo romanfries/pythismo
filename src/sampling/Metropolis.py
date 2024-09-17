@@ -56,7 +56,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False, save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -83,6 +83,10 @@ class PDMMetropolisSampler:
         :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
         solution towards a more likely shape by penalizing unlikely shape deformations.
         :type sigma_prior: float
+        :param sigma_trans:
+        :type sigma_trans: float
+        :param sigma_rot:
+        :type sigma_rot: float
         """
         self.model = pdm
         self.proposal = proposal
@@ -91,16 +95,23 @@ class PDMMetropolisSampler:
         self.batch_mesh = batch_mesh
         self.points = self.batch_mesh.tensor_points
         self.target = target
-        self.target_points = target.tensor_points
+        self.target_points = self.target.tensor_points
         self.correspondences = correspondences
         self.batch_size = self.proposal.batch_size
         self.sigma_lm = sigma_lm
         self.sigma_prior = sigma_prior
+        self.sigma_trans = sigma_trans
+        self.sigma_rot = sigma_rot
         self.old_posterior = None
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL)
         self.accepted_par = self.accepted_trans = self.accepted_rot = 0
         self.rejected_par = self.rejected_trans = self.rejected_rot = 0
+        self.save_chain = save_full_mesh_chain
+        self.full_chain = []
+        self.save_residuals = save_residuals
+        self.residuals_c = []
+        self.residuals_n = []
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -154,12 +165,15 @@ class PDMMetropolisSampler:
         self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
         if self.correspondences:
+            # Does not support partial targets. The number of points of the current mesh instances and the target must
+            # be identical (equal to the full number of model points N).
             differences = torch.sub(self.points, self.target_points)
             # old draft
             # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior)
+                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior,
+                                                   self.sigma_trans, self.sigma_rot)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -185,11 +199,11 @@ class PDMMetropolisSampler:
             # Target is a point cloud, reference a mesh.
             posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
                                                    self.proposal.translation, self.proposal.rotation, self.sigma_lm,
-                                                   self.sigma_prior)
+                                                   self.sigma_prior, self.sigma_trans, self.sigma_rot)
 
         self.posterior = posterior
 
-    def decide(self, parameter_proposal_type: ParameterProposalType):
+    def decide(self, parameter_proposal_type: ParameterProposalType, full_target=None):
         """
         Implements the second and third step of the Metropolis algorithm (according to the lecture notes of the course
         "Statistical Shape Modelling" by Marcel Lüthi). Calculates the ratio of the unnormalised posterior values of the
@@ -210,6 +224,12 @@ class PDMMetropolisSampler:
         self.proposal.update(decider, self.posterior)
         self.batch_mesh.update_points(decider)
         self.points = self.batch_mesh.tensor_points
+        if self.save_chain:
+            self.full_chain.append(self.points)
+        if self.save_residuals and full_target is not None:
+            residual_c, residual_n = self.get_residual(full_target)
+            self.residuals_c.append(residual_c)
+            self.residuals_n.append(residual_n)
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
             self.accepted_par += decider.sum().item()
@@ -220,6 +240,35 @@ class PDMMetropolisSampler:
         else:
             self.accepted_rot += decider.sum().item()
             self.rejected_rot += (self.batch_size - decider.sum().item())
+
+    def get_residual(self, full_target):
+        # TODO: To save runtime, do not recalculate the residuals if the sample was rejected, but use the values of the
+        #  predecessor.
+        differences = torch.sub(self.points, full_target.tensor_points.unsqueeze(-1))
+        residual_c = torch.linalg.vector_norm(differences, dim=1)
+
+        reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
+        target_clouds = full_target.to_pytorch3d_pointclouds(batch_size=self.batch_size)
+        # packed representation for faces
+        verts_packed = reference_meshes.verts_packed()
+        faces_packed = reference_meshes.faces_packed()
+        tris = verts_packed[faces_packed]  # (T, 3, 3)
+        tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
+        # max_tris = reference_meshes.num_faces_per_mesh().max().item()
+
+        points = target_clouds.points_packed()  # (P, 3)
+        points_first_idx = target_clouds.cloud_to_packed_first_idx()
+        max_points = target_clouds.num_points_per_cloud().max().item()
+
+        # point to face squared distance: shape (P,)
+        # requires dtype=torch.float32
+        point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
+                                                       tris_first_idx, max_points).reshape(
+            (-1, int(full_target.num_points)))
+        point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
+        residual_n = torch.sqrt(point_to_face)
+
+        return residual_c, residual_n
 
     def acceptance_ratio(self):
         """
@@ -235,18 +284,17 @@ class PDMMetropolisSampler:
         accepted_tot = self.accepted_par + self.accepted_trans + self.accepted_rot
         rejected_tot = self.rejected_par + self.rejected_trans + self.rejected_rot
         ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
-        #ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
-        ratio_rot = 0.0
-        ratio_trans = 0.0
-        #ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
+        ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
+        ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
         return ratio_par, ratio_trans, ratio_rot, ratio_tot
 
     def change_device(self, dev):
         """
+        Change the device on which the tensor operations are or will be allocated.
 
-        :param dev:
-        :return:
+        :param dev: The future device on which the mesh data is to be saved.
+        :type dev: torch.device
         """
         if self.dev == dev:
             return

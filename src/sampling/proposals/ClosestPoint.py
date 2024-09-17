@@ -116,7 +116,7 @@ class ExtendedPointFaceDistance(_PointFaceDistance):
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model, sigma_mod=1.0,
+    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model, sigma_mod=0.2,
                  sigma_trans=10.0, sigma_rot=0.001, d=1.0, recalculation_period=100, chain_length_step=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -192,7 +192,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.recalculation_period = recalculation_period
         self.counter = 0
 
-    def calculate_posterior_model(self, sigma_n=1.0, sigma_v=20.0):
+    def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
         """
         Executes the calculation of the posterior model.
         In contrast to the algorithm in the paper by D. Madsen et al., all points on the selected current model instance

@@ -174,6 +174,7 @@ def batch_multivariate_gaussian_pdf(k, points, mean, covariance):
 
 
 def distance_to_closest_point(ref_points, target_points, batch_size):
+    # TODO: Write docstring.
     """
     NOTE: Method is currently not used.
 
@@ -182,17 +183,19 @@ def distance_to_closest_point(ref_points, target_points, batch_size):
     :param batch_size:
     :return:
     """
-    target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(
-        0)
+    target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(0)
     points_expanded = ref_points.unsqueeze(1)
     distances = torch.sub(points_expanded, target_points_expanded)
-    closest_points = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=0)
-    distances = distances[closest_points, torch.arange(1000).unsqueeze(1).expand(1000, 100), :,
-                torch.arange(100)]
-    return torch.transpose(distances, 1, 2)
+    return torch.sqrt(torch.min(torch.sum(torch.pow(distances, float(2)), dim=2), dim=1)[0])
+    # closest_points = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=0)
+    # Not sure what the following lines of code were supposed to do.
+    # distances = distances[closest_points, torch.arange(1000).unsqueeze(1).expand(1000, 100), :,
+    #            torch.arange(100)]
+    # return torch.transpose(distances, 1, 2)
 
 
 def index_of_closest_point(ref_points, target_points, batch_size):
+    # TODO: Write docstring.
     """
     NOTE: Method is currently not used.
 
@@ -201,12 +204,11 @@ def index_of_closest_point(ref_points, target_points, batch_size):
     :param batch_size:
     :return:
     """
-    target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(
-        0)
+    target_points_expanded = target_points.unsqueeze(2).expand(-1, -1, batch_size).unsqueeze(0)
     points_expanded = ref_points.unsqueeze(1)
     distances = torch.sub(points_expanded, target_points_expanded)
-    closest_points = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=1)
-    return closest_points
+    closest_idx = torch.argmin(torch.sum(torch.pow(distances, float(2)), dim=2), dim=1)
+    return closest_idx
 
 
 def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
@@ -401,7 +403,7 @@ class PointDistributionModel:
         else:
             return stacked_points.reshape((-1, 3, batch_size))
 
-    def decimate(self, ref, decimation_target=200):
+    def decimate(self, decimation_target=200):
         """
         Reduces the PDM to the specified number of points. Currently, only calculated PDMs can be reduced, i.e. if
         ‘mean_and_cov'='read_in'=False.
@@ -416,7 +418,7 @@ class PointDistributionModel:
         if self.read_in or self.mean_and_cov:
             warnings.warn("Warning: Decimation of imported Point Distribution Models is not (yet) supported.",
                           UserWarning)
-            # return None
+            return None
 
         if self.num_points <= decimation_target:
             warnings.warn("Warning: No decimation necessary, as the target is below the current number of points.",
@@ -428,8 +430,8 @@ class PointDistributionModel:
                           UserWarning)
             return None
 
-        # reference_decimated = self.meshes[0].simplify_qem(decimation_target)
-        reference_decimated = ref.simplify_qem(decimation_target)
+        reference_decimated = self.meshes[0].simplify_qem(decimation_target)
+        # reference_decimated = ref.simplify_qem(decimation_target)
         mean_fun, cov_fun = self.pdm_to_interpolated_gp(decimation_target)
         mean, cov = mean_fun(reference_decimated.tensor_points), cov_fun(reference_decimated.tensor_points,
                                                                          reference_decimated.tensor_points)
