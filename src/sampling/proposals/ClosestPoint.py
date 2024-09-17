@@ -214,8 +214,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         """
         # Consider translation- and rotation-free current shapes.
         batched_shape = self.batched_shapes.copy()
-        batched_shape.apply_rotation(- self.rotation)
         batched_shape.apply_translation(- self.translation)
+        batched_shape.apply_rotation(- self.rotation)
         m = self.prior_model.num_points
         # Choose a random element of the batch to be considered for the calculation of the analytic posterior.
         reconstructed_shape_points = batched_shape.tensor_points[:, :, self.rint].squeeze()
