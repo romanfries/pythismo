@@ -1,16 +1,30 @@
 import torch
 
 
-def autocorrelation(window, lag=1):
-    window_size = window.shape[3]
-    mean = window.mean(dim=3, keepdim=True)
-    y1, y2 = window[:, :, :, :window_size - lag] - mean, window[:, :, :, lag:] - mean
-    autocov = (y1 * y2).mean(dim=3)
-    return autocov / window.var(dim=3)
+def acf(chain, max_lag=100, b_int=100, b_max=2000):
+    # TODO: Write docstring.
+    chain_length = chain.shape[2]
+    mean = torch.stack([chain[:, :, start:].mean(dim=2, keepdim=True) for start in torch.arange(0, b_max + 1, b_int)],
+                       dim=-1)
+    var = torch.stack([chain[:, :, start:].var(dim=2, keepdim=True) for start in torch.arange(0, b_max + 1, b_int)],
+                      dim=-1)
+    autocov = torch.stack([torch.stack([((chain[:, :, start:chain_length - lag] - mean[:, :, :, idx]) * (
+                chain[:, :, start + lag:] - mean[:, :, :, idx])).mean(dim=2) for lag in torch.arange(1, max_lag + 1)],
+                                       dim=-1) for idx, start in enumerate(torch.arange(0, b_max + 1, b_int))], dim=-1)
+    return autocov / var
+
+
+def ess(chain, autocorrelations, b_int=100, b_max=2000):
+    # TODO: Write docstring.
+    chain_length = chain.shape[2]
+    N = chain_length - torch.arange(0, b_max + 1, b_int, device=chain.device)
+    autocorrelation_sums = torch.sum(autocorrelations, dim=2, keepdim=True)
+    return (N / (1 + 2 * autocorrelation_sums)).squeeze()
 
 
 class ChainAnalyser:
     def __init__(self, sampler, proposal, model, observed, mesh_chain=None):
+        # TODO: Write docstring.
         self.sampler = sampler
         self.proposal = proposal
         self.param_chain = proposal.chain  # (num_params, batch_size, chain_length)
@@ -26,6 +40,8 @@ class ChainAnalyser:
             self.mesh_chain = torch.stack(mesh_chain, dim=-1)  # (num_points, 3, batch_size, chain_length)
             self.num_points = self.mesh_chain.shape[0]
         else:
+            warnings.warn("Warning: Functionality to reconstruct the mesh chain not yet implemented. Complete mesh "
+                          "chain must be provided as input.", UserWarning)
             mesh_chain = self.model.get_points_from_parameters(self.param_chain.view(self.num_parameters, -1)[:-6])
             # TODO: Apply the correct rotations and translations to the mesh chain. Currently, the correct mesh chain
             #  must be given as input.
@@ -34,71 +50,132 @@ class ChainAnalyser:
             self.num_points = mesh_chain.shape[0]
             self.mesh_chain = mesh_chain.view(self.num_points, 3, self.batch_size, self.chain_length)
 
-    def detect_burn_in(self, window_size=1000, step_size=10, lag=100, threshold=0.0005):
-        # TODO: Revise. Is this method suitable? What are good hyperparameters?
-        windows = self.param_chain.unfold(dimension=2, size=window_size, step=step_size)
-        num_windows = windows.shape[2]
-        window_starts = torch.arange(0, self.chain_length - window_size + 1, step_size, device=self.param_chain.device)
-        autocorrelations = autocorrelation(windows, lag)
-        mask = (torch.abs(autocorrelations[:, :, 1:] - autocorrelations[:, :, :-1])) < threshold
-        indices = torch.arange(num_windows - 1, device=self.param_chain.device).unsqueeze(0).unsqueeze(0).expand(
-            self.num_parameters, self.batch_size, -1)
-        burn_in_window_end = \
-        torch.where(mask, indices, torch.full_like(indices, fill_value=num_windows - 1)).min(dim=2)[0]
-        burn_in_end = torch.full((self.num_parameters, self.batch_size), self.chain_length, device=self.param_chain.device)
-        valid = burn_in_window_end < num_windows
-        burn_in_end[valid] = window_starts[burn_in_window_end[valid]]
-        return burn_in_end
+    def detect_burn_in(self, ix=10, max_lag=1000, b_int=100, b_max=2000):
+        """
+        The method calculates an approximation of the ESS (Effective Sample Size) for the chains with different burn-in
+        periods and uses this data to automatically detect the burn-in period.
+        According to S. Funk et al., a good optimal burn-in length would be when the ESS has hit its maximum for all
+        parameters (see https://sbfnk.github.io/mfiidd/index.html).
+
+        :param ix: Specifies how many of the first main components of the model are included in the calculation.
+        :type ix: int
+        :param max_lag: Specifies after how many elements the infinite sum of the autocorrelation values in the
+        approximate calculation of the ESS is truncated.
+        :type max_lag: int
+        :param b_int: Interval of the tested burn-in period lengths.
+        :type b_int: int
+        :param b_max: Maximum of the tested burn-in period lengths.
+        :type b_max: int
+        :return: Determined burn-in period length.
+        :rtype: int
+        """
+        # TODO: Revise. Is this method suitable? What are good hyperparameters? Often does not provide reliable values
+        #  at the moment.
+        # See https://emcee.readthedocs.io/en/stable/tutorials/autocorr/ for a more in-depth analysis of Monte Carlo
+        # errors. Include cross-correlations?
+        autocorrelations = acf(self.param_chain[:ix], max_lag, b_int, b_max)
+        ess_values = ess(self.param_chain[:ix], autocorrelations, b_int, b_max)
+        starts = torch.arange(0, b_max + 1, b_int, device=self.param_chain.device)
+        return starts[torch.max(torch.max(ess_values, dim=2)[1])].item()
 
     def mean_dist_to_target(self, burn_in=2000):
+        """
+        Calculates the average distance of each point of the target to the sampled instances across all chains and
+        samples.
+
+        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
+        for the calculation.
+        :type burn_in: int
+        :return: Tuple with two elements:
+        - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
+        reconstructed mesh instances by utilising the known correspondences with shape (num_points,).
+        - torch.Tensor: Tensor containing the average distances to the closest point on the reconstructed mesh
+        instances with shape (num_points,).
+        :rtype: tuple
+        """
         residuals_c_view = self.residuals_c[:, :, burn_in:].reshape(self.num_points, -1)
         residuals_n_view = self.residuals_n[:, :, burn_in:].reshape(self.num_points, -1)
         return residuals_c_view.mean(dim=1), residuals_n_view.mean(dim=1)
 
     def avg_variance_per_point(self, burn_in=2000):
+        """
+        Calculates the variance of all the points in the reconstructed mesh instances.
+
+        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
+        for the calculation.
+        :type burn_in: int
+        :return: Tensor containing the variances mentioned above.
+        :rtype: torch.Tensor
+        """
         mesh_chain_view = self.mesh_chain[:, :, :, burn_in:].reshape(self.num_points, 3, -1)
         return mesh_chain_view.var(dim=2).mean(dim=1)
 
     def posterior_analytics(self, burn_in=2000):
-        means, mins, maxs = self.posterior[:, burn_in:].mean(dim=1), torch.min(self.posterior[:, burn_in:], dim=1)[0], torch.max(self.posterior[:, burn_in:], dim=1)[0]
+        """
+        Calculates/determines the mean, maximum and minimum of the unnormalised log density posterior value of all
+        chains/batch elements.
+
+        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
+        for the calculation.
+        :type burn_in: int
+        :return: Tuple with three elements:
+        - torch.Tensor: Tensor containing the mean of the unnormalised log density posterior value of all chains/batch
+         elements with shape (batch_size,).
+        - torch.Tensor: Tensor containing the minimum value of the unnormalised log density posterior value of all
+        chains/batch elements with shape (batch_size,).
+        - torch.Tensor: Tensor containing the maximum value of the unnormalised log density posterior value of all
+        chains/batch elements with shape (batch_size,).
+        :rtype: tuple
+        """
+        means, mins, maxs = self.posterior[:, burn_in:].mean(dim=1), torch.min(self.posterior[:, burn_in:], dim=1)[0], \
+        torch.max(self.posterior[:, burn_in:], dim=1)[0]
         return means, mins, maxs
 
     def data_to_json(self, loo, obs):
+        """
+        Provides all values calculated in this class in .json format.
+
+        :param loo: Indicator of which mesh instance was reconstructed and accordingly omitted from the calculation of
+        the corresponding PDM during the run.
+        :type loo: int
+        :param obs: Observed share of the mesh in per cent.
+        :type obs: int
+        :return: String containing the data in .json format.
+        :rtype: str
+        """
         mean_dist_c, mean_dist_n = self.mean_dist_to_target()
         avg_var = self.avg_variance_per_point()
         means, mins, maxs = self.posterior_analytics()
         acceptance_ratios = self.sampler.acceptance_ratio()
         data = {
-            'description': 'MCMC',
-            'int_variables': {
+            'description': 'MCMC statistics',
+            'identifiers': {
                 'description': 'TODO',
-                'int_var_1': loo,
-                'int_var_2': obs
+                'reconstructed shape': loo,
+                'percentage observed': obs
             },
-            'float_tensors_200': {
+            'accuracy': {
                 'description': 'TODO',
-                'tensor_1': mean_dist_c.tolist(),
-                'tensor_2': mean_dist_n.tolist(),
-                'tensor_3': avg_var.tolist()
+                'mean distance per point with correspondences': mean_dist_c.tolist(),
+                'mean distance per point without correspondences': mean_dist_n.tolist(),
+                'variance per point': avg_var.tolist()
             },
-            'float_tensors_20': {
+            'unnormalised log density posterior value statistics': {
                 'description': 'TODO',
-                'tensor_1': means.tolist(),
-                'tensor_2': mins.tolist(),
-                'tensor_3': maxs.tolist()
+                'mean values of the posterior': means.tolist(),
+                'min values of the posterior': mins.tolist(),
+                'max values of the posterior': maxs.tolist()
             },
-            'floats': {
+            'acceptance ratios': {
                 'description': 'TODO',
-                'float_1': acceptance_ratios[0],
-                'float_2': acceptance_ratios[1],
-                'float_3': acceptance_ratios[2],
-                'float_4': acceptance_ratios[3]
+                'model parameters': acceptance_ratios[0],
+                'translation parameters': acceptance_ratios[1],
+                'rotation parameters': acceptance_ratios[2],
+                'combined acceptance ratio': acceptance_ratios[3]
             },
-            'bool_tensor_200': {
+            'observed points': {
                 'description': 'TODO',
-                'tensor': self.observed.tolist()
+                'bool tensor': self.observed.tolist()
             }
         }
         return data
-
-

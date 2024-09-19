@@ -77,7 +77,7 @@ def apply_batch_svd(centered_points, num_components):
 def get_parameters(stacked_points, components):
     """
     Determines the model parameters in the model space that correspond to the given mesh points. This involves solving
-    a least squares problem.
+    the least squares problem.
 
     :param stacked_points: Batch with given centered mesh points with shape (3 * num_points, batch_size).
     :type stacked_points: torch.Tensor
@@ -329,11 +329,11 @@ class PointDistributionModel:
 
     def get_eigenvalue_k(self, k):
         """
-        Returns the kth largest eigenvalue of the PDM.
+        Returns the kth-largest eigenvalue of the PDM.
 
         :param k: Specifies which eigenvalue is to be returned.
         :type k: int
-        :return: The kth largest eigenvalue.
+        :return: The kth-largest eigenvalue.
         :rtype: torch.Tensor
         """
         return self.eigenvalues[k]
@@ -651,17 +651,6 @@ class BatchedPointDistributionModel(PointDistributionModel):
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
             self.parameters = get_batch_parameters(self.points_centered[:, :, :], self.components)
             self.decimated = False
-
-    def get_eigenvalue_k(self, k):
-        """
-        Returns the kth largest eigenvalue of all the PDMs.
-
-        :param k: Specifies which eigenvalue is to be returned.
-        :type k: int
-        :return: The kth largest eigenvalue with shape (batch_size,).
-        :rtype: torch.Tensor
-        """
-        return self.eigenvalues[k, :]
 
     def get_component_k(self, k):
         """

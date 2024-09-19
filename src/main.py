@@ -4,11 +4,15 @@ import os
 
 import torch
 from tqdm import tqdm
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # TODO: Organise imports.
 import custom_io
 from model.PointDistribution import PointDistributionModel, distance_to_closest_point
 from src.analysis.Analyser import ChainAnalyser
+from src.custom_io.DataIO import DataHandler
 from src.registration.IterativeClosestPoints import ICPAnalyser, ICPMode
 from src.sampling.Metropolis import PDMMetropolisSampler
 from src.custom_io.H5ModelIO import ModelReader
@@ -22,12 +26,15 @@ from visualization.DashViewer import MainVisualizer
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+READ_JSON = True
+
 READ_IN = False
 SIMPLIFY = True
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
 
+REL_INPUT_DIR = "datasets/output/ClosestPointProposal"
 REL_OUTPUT_DIR = "datasets/output"
 
 BATCH_SIZE = 20
@@ -57,6 +64,65 @@ PERCENTAGES_OBSERVED_LENGTH = [0.2, 0.4, 0.6, 0.8, 1.0]
 
 def run():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+    if READ_JSON:
+        handler = DataHandler(REL_OUTPUT_DIR, REL_INPUT_DIR)
+        data_dict = handler.read_all_jsons()
+
+        avg_var = data_dict['accuracy']['avg_var']
+        mean_dist_n = data_dict['accuracy']['mean_dist_n']
+        obs = data_dict['identifiers']['obs']
+        observed = data_dict['observed']
+
+
+        avg_var_all = avg_var.mean(dim=1).numpy()
+        mean_dist_n_all = mean_dist_n.mean(dim=1).numpy()
+
+        avg_var_copy_t, avg_var_copy_f = avg_var.clone(), avg_var.clone()
+        mean_dist_n_copy_t, mean_dist_n_copy_f = mean_dist_n.clone(), mean_dist_n.clone()
+        avg_var_copy_t[~observed] = float('nan')
+        mean_dist_n_copy_t[~observed] = float('nan')
+        avg_var_mean_t = torch.nanmean(avg_var_copy_t, dim=1)
+        mean_dist_n_mean_t = torch.nanmean(mean_dist_n_copy_t, dim=1)
+        avg_var_copy_f[observed] = float('nan')
+        mean_dist_n_copy_f[observed] = float('nan')
+        avg_var_mean_f = torch.nanmean(avg_var_copy_f, dim=1)
+        mean_dist_n_mean_f = torch.nanmean(mean_dist_n_copy_f, dim=1)
+
+        df = pd.DataFrame({
+            'obs': obs,
+            'avg_var_all': avg_var_all,
+            'avg_var_mean_t': avg_var_mean_t.numpy(),
+            'avg_var_mean_f': avg_var_mean_f.numpy()
+        })
+
+        df_melted = df.melt(id_vars=['obs'], value_vars=['avg_var_mean_t', 'avg_var_mean_f', 'avg_var_all'],
+                            var_name='category', value_name='mean')
+
+        category_mapping = {
+            'avg_var_mean_t': 'Observed points',
+            'avg_var_mean_f': 'Reconstructed points',
+            'avg_var_all': 'All points'
+        }
+        df_melted['category'] = df_melted['category'].map(category_mapping)
+        df_melted = df_melted.dropna(subset=['mean'])
+
+        # df['obs'] = df['obs'].astype(int)
+        plt.figure(figsize=(12, 6))
+
+        sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+
+        plt.xlabel('Observed portion of the length of the femur [%]')
+        plt.ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
+        plt.title('Reconstruction of a previously unseen femur (LOOCV with N=47) using parallel MCMC sampling (20 chains '
+                'with 20000 samples each).')
+
+        plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
+
+        plt.ylim(0, 25)
+
+        plt.tight_layout()
+        plt.show()
+
     if READ_IN:
         # Test procedure with subsequent visualisation
         rel_model_path = Path(REL_PATH_MODEL)
@@ -162,6 +228,7 @@ def run():
                 # visualizer.run()
 
                 analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
+                analyser.detect_burn_in()
                 data = analyser.data_to_json(l, int(100 * percentage))
                 meshes.insert(l, target)
                 # TODO: Write proper output writer class.
