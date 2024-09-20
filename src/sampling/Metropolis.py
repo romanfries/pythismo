@@ -82,11 +82,16 @@ class PDMMetropolisSampler:
         :type sigma_lm: float
         :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
         solution towards a more likely shape by penalizing unlikely shape deformations.
+        # TODO: Adjust docstring.
         :type sigma_prior: float
         :param sigma_trans:
         :type sigma_trans: float
         :param sigma_rot:
         :type sigma_rot: float
+        :param save_full_mesh_chain:
+        :type save_full_mesh_chain: bool
+        :param save_residuals:
+        :type save_residuals: bool
         """
         self.model = pdm
         self.proposal = proposal
@@ -290,6 +295,8 @@ class PDMMetropolisSampler:
         return ratio_par, ratio_trans, ratio_rot, ratio_tot
 
     def change_device(self, dev):
+        # TODO: A bug occurs if the model is moved before the first iteration of the sampling has been executed. Not all
+        #  tensors have already been initialised at this point.
         """
         Change the device on which the tensor operations are or will be allocated.
 

@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 
 
@@ -9,7 +11,7 @@ def acf(chain, max_lag=100, b_int=100, b_max=2000):
     var = torch.stack([chain[:, :, start:].var(dim=2, keepdim=True) for start in torch.arange(0, b_max + 1, b_int)],
                       dim=-1)
     autocov = torch.stack([torch.stack([((chain[:, :, start:chain_length - lag] - mean[:, :, :, idx]) * (
-                chain[:, :, start + lag:] - mean[:, :, :, idx])).mean(dim=2) for lag in torch.arange(1, max_lag + 1)],
+            chain[:, :, start + lag:] - mean[:, :, :, idx])).mean(dim=2) for lag in torch.arange(1, max_lag + 1)],
                                        dim=-1) for idx, start in enumerate(torch.arange(0, b_max + 1, b_int))], dim=-1)
     return autocov / var
 
@@ -78,7 +80,7 @@ class ChainAnalyser:
         starts = torch.arange(0, b_max + 1, b_int, device=self.param_chain.device)
         return starts[torch.max(torch.max(ess_values, dim=2)[1])].item()
 
-    def mean_dist_to_target(self, burn_in=2000):
+    def mean_dist_to_target_post(self, burn_in=2000):
         """
         Calculates the average distance of each point of the target to the sampled instances across all chains and
         samples.
@@ -97,9 +99,31 @@ class ChainAnalyser:
         residuals_n_view = self.residuals_n[:, :, burn_in:].reshape(self.num_points, -1)
         return residuals_c_view.mean(dim=1), residuals_n_view.mean(dim=1)
 
-    def avg_variance_per_point(self, burn_in=2000):
+    def mean_dist_to_target_map(self, burn_in=2000):
         """
-        Calculates the variance of all the points in the reconstructed mesh instances.
+        Calculates the average distance of each point of the target to the maximum a posteriori (MAP) estimate across
+        all chains.
+
+        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
+        for the calculation.
+        :type burn_in: int
+        :return: Tuple with two elements:
+        - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
+        reconstructed mesh instance by utilising the known correspondences with shape (num_points,).
+        - torch.Tensor: Tensor containing the average distances to the closest point on the reconstructed mesh
+        instance with shape (num_points,).
+        :rtype: tuple
+        """
+        map_indices = torch.max(self.posterior[:, burn_in:], dim=1)[1]
+        return self.residuals_c[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices], self.residuals_n[:, :,
+                                                                                                burn_in:][:,
+                                                                                                torch.arange(
+                                                                                                    self.batch_size),
+                                                                                                map_indices]
+
+    def avg_variance_per_point_post(self, burn_in=2000):
+        """
+        Calculates the variance of all the points in the reconstructed mesh instances across all chains and samples.
 
         :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
         for the calculation.
@@ -110,28 +134,46 @@ class ChainAnalyser:
         mesh_chain_view = self.mesh_chain[:, :, :, burn_in:].reshape(self.num_points, 3, -1)
         return mesh_chain_view.var(dim=2).mean(dim=1)
 
-    def posterior_analytics(self, burn_in=2000):
+    def avg_variance_per_point_map(self, burn_in=2000):
         """
-        Calculates/determines the mean, maximum and minimum of the unnormalised log density posterior value of all
-        chains/batch elements.
+        Calculates the variance of all the points of the maximum a posteriori (MAP) estimates across all chains.
 
         :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
         for the calculation.
         :type burn_in: int
-        :return: Tuple with three elements:
+        :return: Tensor containing the variances mentioned above.
+        :rtype: torch.Tensor
+        """
+        map_indices = torch.max(self.posterior[:, burn_in:], dim=1)[1]
+        return self.mesh_chain[:, :, :, burn_in:][:, :, torch.arange(self.batch_size), map_indices].var(dim=2).mean(
+            dim=1)
+
+    def posterior_analytics(self, burn_in=2000):
+        """
+        Calculates/determines the mean, maximum, minimum and variances of the unnormalised log density posterior value
+        of all chains/batch elements.
+
+        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
+        for the calculation.
+        :type burn_in: int
+        :return: Tuple with four elements:
         - torch.Tensor: Tensor containing the mean of the unnormalised log density posterior value of all chains/batch
          elements with shape (batch_size,).
         - torch.Tensor: Tensor containing the minimum value of the unnormalised log density posterior value of all
         chains/batch elements with shape (batch_size,).
         - torch.Tensor: Tensor containing the maximum value of the unnormalised log density posterior value of all
         chains/batch elements with shape (batch_size,).
+        - torch.Tensor: Tensor containing the variances of the unnormalised log density posterior value of all
+        chains/batch elements with shape (batch_size,).
         :rtype: tuple
         """
-        means, mins, maxs = self.posterior[:, burn_in:].mean(dim=1), torch.min(self.posterior[:, burn_in:], dim=1)[0], \
-        torch.max(self.posterior[:, burn_in:], dim=1)[0]
-        return means, mins, maxs
+        means, mins, maxs, vars = self.posterior[:, burn_in:].mean(dim=1), \
+        torch.min(self.posterior[:, burn_in:], dim=1)[0], torch.max(self.posterior[:, burn_in:], dim=1)[
+            0], self.posterior[:, burn_in:].var(dim=1)
+        return means, mins, maxs, vars
 
     def data_to_json(self, loo, obs):
+        # TODO: Not updated and therefore does not contain all metrics calculated in the class.
         """
         Provides all values calculated in this class in .json format.
 
@@ -143,8 +185,8 @@ class ChainAnalyser:
         :return: String containing the data in .json format.
         :rtype: str
         """
-        mean_dist_c, mean_dist_n = self.mean_dist_to_target()
-        avg_var = self.avg_variance_per_point()
+        mean_dist_c, mean_dist_n = self.mean_dist_to_target_post()
+        avg_var = self.avg_variance_per_point_post()
         means, mins, maxs = self.posterior_analytics()
         acceptance_ratios = self.sampler.acceptance_ratio()
         data = {

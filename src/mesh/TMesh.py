@@ -1,5 +1,6 @@
 import numpy as np
 import meshio
+import trimesh.proximity
 from trimesh import Trimesh
 
 import pytorch3d
@@ -161,6 +162,31 @@ class TorchMeshGpu(Mesh):
 
         new_mesh = meshio.Mesh(new_coordinates.astype(np.float32),
                                [meshio.CellBlock('triangle', new_triangles.astype(np.int64))])
+        return self.from_mesh(new_mesh, self.id, self.dev)
+
+    def simplify_ref(self, ref_full, ref_dec):
+        """
+        This method allows to decimate a mesh such that the correspondences to a previously decimated mesh (using the
+        QEM procedure) are preserved. The procedure works as follows: The barycentric coordinates of the new vertex
+        positions of the previously decimated mesh on its original are determined. These coordinates can then be used
+        to extract the corresponding vertex positions of the current mesh to decimate.
+
+        :param ref_full: Original of the previously decimated mesh.
+        :type ref_full: TorchMeshGpu
+        :param ref_dec: Previously decimated mesh.
+        :type ref_dec: TorchMeshGpu
+        :return: Decimated instance of 'self' with preserved correspondences to the previously decimated mesh.
+        :rtype: TorchMeshGpu
+        """
+        tri_full = Trimesh(ref_full.tensor_points.cpu(), ref_full.cells[0].data.cpu())
+        tri_dec = Trimesh(ref_dec.tensor_points.cpu(), ref_dec.cells[0].data.cpu())
+        closest, distance, triangle_id = trimesh.proximity.closest_point(tri_full, ref_dec.tensor_points.cpu())
+        barycentric_coords = trimesh.triangles.points_to_barycentric(tri_full.vertices[tri_full.faces[triangle_id]],
+                                                                     tri_dec.vertices)
+        new_cart_coords = trimesh.triangles.barycentric_to_points(self.tensor_points.cpu()[tri_full.faces[triangle_id]],
+                                                                  barycentric_coords)
+        new_mesh = meshio.Mesh(new_cart_coords.astype(np.float32),
+                               [meshio.CellBlock('triangle', tri_dec.faces.astype(np.int64))])
         return self.from_mesh(new_mesh, self.id, self.dev)
 
     def set_points(self, transformed_points, reset_com=False):

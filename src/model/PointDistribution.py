@@ -404,6 +404,7 @@ class PointDistributionModel:
             return stacked_points.reshape((-1, 3, batch_size))
 
     def decimate(self, decimation_target=200):
+        # TODO: Implement model decimation for all PDMs.
         """
         Reduces the PDM to the specified number of points. Currently, only calculated PDMs can be reduced, i.e. if
         ‘mean_and_cov'='read_in'=False.
@@ -677,9 +678,10 @@ class BatchedPointDistributionModel(PointDistributionModel):
 
     def get_points_from_parameters(self, parameters):
         """
-        Takes model parameters and calculates the coordinates of all points of the instances defined by these
+        Takes model parameters and calculates the coordinates of all points of the instance defined by these
         parameters. There are two options: Either only one set of model parameters is provided, or as many sets as the
         batch size of the batched PDM. In the first case, the same parameters are used as input for all internal PDMs.
+        In the second case, the i-th set of model parameters is evaluated using the i-th model.
 
         :param parameters: Model parameters for which the point coordinates of the associated instances are to be
         calculated, either of shape (rank,) or (rank, batch_size).
@@ -687,7 +689,6 @@ class BatchedPointDistributionModel(PointDistributionModel):
         :return: Calculated point coordinates of shape (num_points, 3, batch_size).
         :rtype: torch.Tensor
         """
-        # TODO: Now, for every set of parameters, the points under all models are calculated.
         if parameters.ndim == 1:
             parameters = parameters.unsqueeze(1).expand(-1, self.batch_size)
 

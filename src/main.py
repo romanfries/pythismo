@@ -26,7 +26,7 @@ from visualization.DashViewer import MainVisualizer
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-READ_JSON = True
+READ_JSON = False
 
 READ_IN = False
 SIMPLIFY = True
@@ -45,7 +45,7 @@ MODEL_PROBABILITY = 0.6
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-PROPOSAL_TYPE = "CP_SIMPLE"
+PROPOSAL_TYPE = "GAUSS_RAND"
 
 SIGMA_MOD_GAUSS = 0.05
 SIGMA_MOD_CP = 0.2
@@ -163,9 +163,9 @@ def run():
             sampler.determine_quality(proposal)
             sampler.decide(proposal, full_target)
 
-        batched_shape.change_device(torch.device("cpu"))
-        model.change_device(torch.device("cpu"))
-        sampler.change_device(torch.device("cpu"))
+        # batched_shape.change_device(torch.device("cpu"))
+        # model.change_device(torch.device("cpu"))
+        # sampler.change_device(torch.device("cpu"))
         visualizer = MainVisualizer(batched_shape, model, sampler)
         acceptance_ratios = sampler.acceptance_ratio()
         print("Acceptance Ratios:")
@@ -180,17 +180,24 @@ def run():
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
             for l in range(len(meshes)):
                 target = meshes[l]
-                full_target = target.simplify_qem(DECIMATION_TARGET)
-                z_min, z_max = torch.min(full_target.tensor_points, dim=0)[1][2].item(), \
-                torch.max(full_target.tensor_points, dim=0)[1][2].item()
-                part_target = full_target.partial_shape(z_max, z_min, 1 - percentage)
-                dists = distance_to_closest_point(full_target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
-                observed = (dists < 1e-6).squeeze()
+                # full_target = target.simplify_qem(DECIMATION_TARGET)
+                # z_min, z_max = torch.min(full_target.tensor_points, dim=0)[1][2].item(), \
+                # torch.max(full_target.tensor_points, dim=0)[1][2].item()
+                # part_target = full_target.partial_shape(z_max, z_min, 1 - percentage)
+                # dists = distance_to_closest_point(full_target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
+                # observed = (dists < 1e-6).squeeze()
                 del meshes[l]
                 model = PointDistributionModel(meshes=meshes)
                 # LATER
                 # meshes.insert(l, target)
                 shape = model.decimate(DECIMATION_TARGET)
+                # model.decimate() uses the first mesh of the list as its reference.
+                full_target = target.simplify_ref(meshes[0], shape)
+                z_min, z_max = torch.min(full_target.tensor_points, dim=0)[1][2].item(), \
+                torch.max(full_target.tensor_points, dim=0)[1][2].item()
+                part_target = full_target.partial_shape(z_max, z_min, 1 - percentage)
+                dists = distance_to_closest_point(full_target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
+                observed = (dists < 1e-6).squeeze()
                 batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
                 starting_params = torch.zeros(model.rank, device=DEVICE)
                 shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
@@ -228,7 +235,7 @@ def run():
                 # visualizer.run()
 
                 analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
-                analyser.detect_burn_in()
+                # analyser.detect_burn_in()
                 data = analyser.data_to_json(l, int(100 * percentage))
                 meshes.insert(l, target)
                 # TODO: Write proper output writer class.
