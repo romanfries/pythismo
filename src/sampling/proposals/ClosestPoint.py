@@ -116,8 +116,10 @@ class ExtendedPointFaceDistance(_PointFaceDistance):
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model, sigma_mod=0.2,
-                 sigma_trans=10.0, sigma_rot=0.001, d=1.0, recalculation_period=100, chain_length_step=1000):
+    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model, sigma_mod,
+                 sigma_trans, sigma_rot, prob_mod, prob_trans, prob_rot, d=1.0, recalculation_period=100,
+                 chain_length_step=1000):
+        # TODO: Adjust docstring.
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -170,7 +172,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         samples were drawn, the chain must be extended again accordingly.
         :type chain_length_step: int
         """
-        super().__init__(batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, chain_length_step)
+        super().__init__(batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, prob_mod, prob_trans,
+                         prob_rot, chain_length_step)
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.old_posterior_parameters = None
         self.single_shape = TorchMeshGpu(
@@ -337,7 +340,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.old_rotation = self.rotation
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
-            self.posterior_parameters = self.posterior_parameters + perturbations * self.sigma_mod
+            sigma_mod = self.sigma_mod[torch.multinomial(self.prob_mod, 1).item()].item()
+            self.posterior_parameters = self.posterior_parameters + perturbations * sigma_mod
             self.parameters = self.parameters + self.d * (torch.matmul(self.projection_matrix,
                                                                        self.posterior_parameters) + self.mean_correction
                                                           - self.parameters)
@@ -350,11 +354,12 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             # rev_mean_correction))
             # self.ratio_trans_prob = rev_trans_prob / trans_prob
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.translation = self.translation + perturbations * self.sigma_trans * math.sqrt(
-                (1 / self.prior_model.num_points))
+            sigma_trans = self.sigma_trans[torch.multinomial(self.prob_trans, 1).item()].item()
+            self.translation = self.translation + perturbations * sigma_trans
             # self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
         else:
-            self.rotation = self.rotation + perturbations * self.sigma_rot
+            sigma_rot = self.sigma_rot[torch.multinomial(self.prob_rot, 1).item()].item()
+            self.rotation = self.rotation + perturbations * sigma_rot
             # self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
 
         self.counter += 1
@@ -400,6 +405,14 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.mean_correction = self.mean_correction.to(dev)
             self.prior_projection = self.prior_projection.to(dev)
             self.projection_matrix = self.projection_matrix.to(dev)
+
+            self.sigma_mod = self.sigma_mod.to(dev)
+            self.sigma_trans = self.sigma_trans.to(dev)
+            self.sigma_rot = self.sigma_rot.to(dev)
+
+            self.prob_mod = self.prob_mod.to(dev)
+            self.prob_trans = self.prob_trans.to(dev)
+            self.prob_rot = self.prob_rot.to(dev)
 
             self.single_shape.change_device(dev)
             self.batched_shapes.change_device(dev)

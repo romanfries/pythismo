@@ -115,11 +115,8 @@ class ChainAnalyser:
         :rtype: tuple
         """
         map_indices = torch.max(self.posterior[:, burn_in:], dim=1)[1]
-        return self.residuals_c[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices], self.residuals_n[:, :,
-                                                                                                burn_in:][:,
-                                                                                                torch.arange(
-                                                                                                    self.batch_size),
-                                                                                                map_indices]
+        return self.residuals_c[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1), \
+            self.residuals_n[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1)
 
     def avg_variance_per_point_post(self, burn_in=2000):
         """
@@ -173,51 +170,51 @@ class ChainAnalyser:
         return means, mins, maxs, vars
 
     def data_to_json(self, loo, obs):
-        # TODO: Not updated and therefore does not contain all metrics calculated in the class.
         """
         Provides all values calculated in this class in .json format.
 
         :param loo: Indicator of which mesh instance was reconstructed and accordingly omitted from the calculation of
         the corresponding PDM during the run.
         :type loo: int
-        :param obs: Observed share of the mesh in per cent.
+        :param obs: Observed share of the mesh to reconstruct in per cent.
         :type obs: int
         :return: String containing the data in .json format.
         :rtype: str
         """
-        mean_dist_c, mean_dist_n = self.mean_dist_to_target_post()
-        avg_var = self.avg_variance_per_point_post()
-        means, mins, maxs = self.posterior_analytics()
-        acceptance_ratios = self.sampler.acceptance_ratio()
+        mean_dist_c_post, mean_dist_n_post = self.mean_dist_to_target_post()
+        mean_dist_c_map, mean_dist_n_map = self.mean_dist_to_target_map()
+        avg_var_post = self.avg_variance_per_point_post()
+        avg_var_map = self.avg_variance_per_point_map()
+        means, mins, maxs, vars = self.posterior_analytics()
+        acc_par, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio()
         data = {
             'description': 'MCMC statistics',
             'identifiers': {
-                'description': 'TODO',
-                'reconstructed shape': loo,
-                'percentage observed': obs
+                'reconstructed_shape': loo,
+                'percentage_observed': obs
             },
             'accuracy': {
-                'description': 'TODO',
-                'mean distance per point with correspondences': mean_dist_c.tolist(),
-                'mean distance per point without correspondences': mean_dist_n.tolist(),
-                'variance per point': avg_var.tolist()
+                'mean_dist_corr_post': mean_dist_c_post.tolist(),
+                'mean_dist_clp_post': mean_dist_n_post.tolist(),
+                'mean_dist_corr_map': mean_dist_c_map.tolist(),
+                'mean_dist_clp_map': mean_dist_n_map.tolist(),
+                'var_post': avg_var_post.tolist(),
+                'var_map': avg_var_map.tolist()
             },
-            'unnormalised log density posterior value statistics': {
-                'description': 'TODO',
-                'mean values of the posterior': means.tolist(),
-                'min values of the posterior': mins.tolist(),
-                'max values of the posterior': maxs.tolist()
+            'unnormalised_log_density_posterior': {
+                'mean': means.tolist(),
+                'min': mins.tolist(),
+                'max': maxs.tolist(),
+                'var': vars.tolist()
             },
-            'acceptance ratios': {
-                'description': 'TODO',
-                'model parameters': acceptance_ratios[0],
-                'translation parameters': acceptance_ratios[1],
-                'rotation parameters': acceptance_ratios[2],
-                'combined acceptance ratio': acceptance_ratios[3]
+            'acceptance': {
+                'model': acc_par,
+                'translation': acc_trans,
+                'rotation': acc_rot,
+                'total': acc_tot
             },
-            'observed points': {
-                'description': 'TODO',
-                'bool tensor': self.observed.tolist()
+            'observed': {
+                'boolean': self.observed.tolist()
             }
         }
         return data

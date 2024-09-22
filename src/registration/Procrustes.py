@@ -39,18 +39,18 @@ def align_to_reference(reference, landmarks_set):
 
 
 class ProcrustesAnalyser:
-    def __init__(self, landmarks_set, reference=None, iterations=5, data_format='landmark_list'):
-        if data_format == 'landmark_list':
+    def __init__(self, landmarks_set, reference=None, iterations=20, data_format='landmark_json'):
+        if data_format == 'landmark_json':
             # landmarks_set is a list of tuples with the respective coordinates of the landmarks and the identifier that
             # clarifies to which mesh these landmarks belong.
             self.reference, self.landmarks_set, self.identifiers = prepare_landmark_json(reference, landmarks_set)
-        elif data_format == 'meshio_mesh':
+        elif data_format == 'mesh':
             # Important: Only functions as desired if correspondences are given and should therefore be used with
             # caution!
             self.landmarks_set = []
             self.identifiers = []
             for mesh in landmarks_set:
-                self.landmarks_set.append(mesh.points.tolist())
+                self.landmarks_set.append(mesh.tensor_points.cpu())
                 self.identifiers.append(mesh.id)
             self.reference = self.landmarks_set[0]
         else:

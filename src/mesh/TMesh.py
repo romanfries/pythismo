@@ -170,6 +170,7 @@ class TorchMeshGpu(Mesh):
         QEM procedure) are preserved. The procedure works as follows: The barycentric coordinates of the new vertex
         positions of the previously decimated mesh on its original are determined. These coordinates can then be used
         to extract the corresponding vertex positions of the current mesh to decimate.
+        Idea: https://zarquon42b.github.io/2015/01/30/remeshList/
 
         :param ref_full: Original of the previously decimated mesh.
         :type ref_full: TorchMeshGpu
@@ -323,10 +324,11 @@ class TorchMeshGpu(Mesh):
 
             self.dev = dev
 
-    def partial_shape(self, idx1, idx2, ratio_observed):
+    def partial_shape(self, idx1, idx2, ratio_observed, plane_given=False, plane_normal=None, plane_origin=None):
         """
-        Takes the two indices of the points that define the length of the mesh and the proportion of the desired
+        Takes the two indices of the points that define the length of the mesh and the length proportion of the desired
         observed part and determines the corresponding partial mesh.
+        It is also possible to define the cutting plane in advance and pass its normal and origin as input parameters.
 
         :param idx1: Index of the highest point of the mesh.
         :type idx1: int
@@ -334,16 +336,23 @@ class TorchMeshGpu(Mesh):
         :type idx2: int
         :param ratio_observed: Proportion of the desired observed part.
         :type ratio_observed: float
+        :param plane_given:
+        :type plane_given: bool
+        :param plane_normal:
+        :type plane_normal: None or torch.Tensor
+        :param plane_origin:
+        :type plane_origin: None or torch.Tensor
         :return: Partial shape as a TorchMeshGpu instance.
         :rtype: TorchMeshGpu
         """
-        plane_normal = (self.tensor_points[idx1, :] - self.tensor_points[idx2, :])
-        plane_origin = (self.tensor_points[idx2, :] + ratio_observed * plane_normal)
+        if not plane_given:
+            plane_normal = (self.tensor_points[idx1, :] - self.tensor_points[idx2, :])
+            plane_origin = (self.tensor_points[idx2, :] + (1.0 - ratio_observed) * plane_normal)
         mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin.cpu(),
                                                                                            plane_normal.cpu())
         return TorchMeshGpu(
             meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
-            'partial_shape', self.dev)
+            'partial_shape', self.dev), plane_normal, plane_origin
 
 
 class BatchTorchMesh(TorchMeshGpu):

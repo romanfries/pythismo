@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import torch
 from pytorch3d.loss.point_mesh_distance import point_face_distance
@@ -8,7 +9,7 @@ from src.sampling.proposals.ClosestPoint import FullClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_mod, sigma_trans=20.0, sigma_rot=0.005):
+def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_mod, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
     """
     Calculates the unnormalised log posterior given the distance of each point of the target to its closest point on the
     surface of the current shape and the model parameters of the current shape.
@@ -18,19 +19,19 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     parameters. For the likelihood term, the L2 distance (independent point evaluator likelihood) is used. The L2
     distance is also evaluated using a zero-mean Gaussian with indicated variance.
 
-    :param distances: Tensor with distances of each point of the target to the closest point on the surface of the
-    references considered with shape (num_target_points, batch_size).
+    :param distances: Tensor with distances from each point of the target to the closest point on the surface of the
+    current shapes considered with shape (num_target_points, batch_size).
     :type distances: torch.Tensor
-    :param parameters: Tensor with the current model parameters of the references under consideration with shape
+    :param parameters: Tensor with the current model parameters of the current shapes considered with shape
     (num_parameters, batch_size).
     :type parameters: torch.Tensor
-    :param translation: Tensor with the current translation parameters of the references under consideration with shape
+    :param translation: Tensor with the current translation parameters of the current shapes considered with shape
     (3, batch_size).
     :type translation: torch.Tensor
-    :param rotation: Tensor with the current rotation parameters of the references under consideration with shape
+    :param rotation: Tensor with the current rotation parameters of the current shapes considered with shape
     (3, batch_size).
     :type rotation: torch.Tensor
-    :param sigma_lm: Variance of the zero-mean Gaussian, which is used to evaluate the L2 distance. The same variance
+    :param sigma_lm: Variance of the zero-mean Gaussian, which is used to evaluate the L2 distances. The same variance
     value is used for all 3 dimensions (isotropic distribution).
     :type sigma_lm: float
     :param sigma_mod: Variance of the model parameters (prior term calculation).
@@ -45,18 +46,21 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     distances_squared = torch.pow(distances, 2)
     log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
-    # uniform_translation_prior = Uniform(torch.tensor(-100, device=dev), torch.tensor(100, device=dev))
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
-    # log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
-    log_translation = 0.5 * torch.sum(-torch.pow(translation / sigma_trans, 2), dim=0)
-    # uniform_rotation_prior = Uniform(torch.tensor(-math.pi, device=dev), torch.tensor(math.pi, device=dev))
-    # log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
-    log_rotation = 0.5 * torch.sum(-torch.pow(rotation / sigma_rot, 2), dim=0)
+    if uniform_pose_prior:
+        dev = distances.device
+        uniform_translation_prior = Uniform(torch.tensor(-100, device=dev), torch.tensor(100, device=dev))
+        uniform_rotation_prior = Uniform(torch.tensor(-math.pi, device=dev), torch.tensor(math.pi, device=dev))
+        log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
+        log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
+    else:
+        log_translation = 0.5 * torch.sum(-torch.pow(translation / sigma_trans, 2), dim=0)
+        log_rotation = 0.5 * torch.sum(-torch.pow(rotation / sigma_rot, 2), dim=0)
     return log_likelihoods + log_prior + log_translation + log_rotation
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False, save_residuals=False):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False, save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -82,8 +86,10 @@ class PDMMetropolisSampler:
         :type sigma_lm: float
         :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
         solution towards a more likely shape by penalizing unlikely shape deformations.
-        # TODO: Adjust docstring.
         :type sigma_prior: float
+        # TODO: Adjust docstring.
+        :param uniform_pose_prior:
+        :type uniform_pose_prior: bool
         :param sigma_trans:
         :type sigma_trans: float
         :param sigma_rot:
@@ -105,8 +111,11 @@ class PDMMetropolisSampler:
         self.batch_size = self.proposal.batch_size
         self.sigma_lm = sigma_lm
         self.sigma_prior = sigma_prior
+        self.uniform_pose_prior = uniform_pose_prior
         self.sigma_trans = sigma_trans
         self.sigma_rot = sigma_rot
+        if self.uniform_pose_prior:
+            self.sigma_trans, self.sigma_rot = 0.0, 0.0
         self.old_posterior = None
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL)
@@ -178,7 +187,7 @@ class PDMMetropolisSampler:
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
                                                    self.proposal.rotation, self.sigma_lm, self.sigma_prior,
-                                                   self.sigma_trans, self.sigma_rot)
+                                                   self.uniform_pose_prior, self.sigma_trans, self.sigma_rot)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -204,7 +213,8 @@ class PDMMetropolisSampler:
             # Target is a point cloud, reference a mesh.
             posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
                                                    self.proposal.translation, self.proposal.rotation, self.sigma_lm,
-                                                   self.sigma_prior, self.sigma_trans, self.sigma_rot)
+                                                   self.sigma_prior, self.uniform_pose_prior, self.sigma_trans,
+                                                   self.sigma_rot)
 
         self.posterior = posterior
 
@@ -317,3 +327,10 @@ class PDMMetropolisSampler:
             self.posterior = self.posterior.to(dev)
 
             self.dev = dev
+
+    def get_chain_and_residuals(self):
+        # TODO: Write docstring.
+        if self.save_chain and self.save_residuals:
+            return {'chain': self.full_chain, 'res_corr': self.residuals_c, 'res_clp': self.residuals_n}
+        else:
+            warnings.warn("Warning: Chains and residuals were not saved.", UserWarning)
