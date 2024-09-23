@@ -27,16 +27,16 @@ from visualization.DashViewer import MainVisualizer
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-RUN_WHOLE_EXPERIMENT = True
+RUN_WHOLE_EXPERIMENT = False
 GENERATE_PLOTS = False
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/cp"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/gr"
 
-BATCH_SIZE = 20
-CHAIN_LENGTH = 22000
+BATCH_SIZE = 2
+CHAIN_LENGTH = 2001
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
@@ -45,7 +45,7 @@ ROTATION_PROBABILITY = 0.2
 
 PROPOSAL_TYPE = "CP_SIMPLE"
 
-SIGMA_MOD_GAUSS = torch.tensor([0.025, 0.05, 0.1], device=DEVICE)
+SIGMA_MOD_GAUSS = torch.tensor([0.04, 0.08, 0.16], device=DEVICE)
 SIGMA_MOD_CP = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
 SIGMA_TRANS = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
 # Variance in radians
@@ -63,64 +63,11 @@ CP_RECALCULATION_PERIOD = 1000
 PERCENTAGES_OBSERVED_LENGTH = [0.2, 0.4, 0.6, 0.8]
 
 
-def run():
+def plot():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
     data_dict = handler.read_all_statistics()
-
-    avg_var = data_dict['accuracy']['avg_var']
-    mean_dist_n = data_dict['accuracy']['mean_dist_n']
-    obs = data_dict['identifiers']['obs']
-    observed = data_dict['observed']
-
-    avg_var_all = avg_var.mean(dim=1).numpy()
-    mean_dist_n_all = mean_dist_n.mean(dim=1).numpy()
-
-    avg_var_copy_t, avg_var_copy_f = avg_var.clone(), avg_var.clone()
-    mean_dist_n_copy_t, mean_dist_n_copy_f = mean_dist_n.clone(), mean_dist_n.clone()
-    avg_var_copy_t[~observed] = float('nan')
-    mean_dist_n_copy_t[~observed] = float('nan')
-    avg_var_mean_t = torch.nanmean(avg_var_copy_t, dim=1)
-    mean_dist_n_mean_t = torch.nanmean(mean_dist_n_copy_t, dim=1)
-    avg_var_copy_f[observed] = float('nan')
-    mean_dist_n_copy_f[observed] = float('nan')
-    avg_var_mean_f = torch.nanmean(avg_var_copy_f, dim=1)
-    mean_dist_n_mean_f = torch.nanmean(mean_dist_n_copy_f, dim=1)
-
-    df = pd.DataFrame({
-        'obs': obs,
-        'avg_var_all': avg_var_all,
-        'avg_var_mean_t': avg_var_mean_t.numpy(),
-        'avg_var_mean_f': avg_var_mean_f.numpy()
-    })
-
-    df_melted = df.melt(id_vars=['obs'], value_vars=['avg_var_mean_t', 'avg_var_mean_f', 'avg_var_all'],
-                        var_name='category', value_name='mean')
-
-    category_mapping = {
-        'avg_var_mean_t': 'Observed points',
-        'avg_var_mean_f': 'Reconstructed points',
-        'avg_var_all': 'All points'
-    }
-    df_melted['category'] = df_melted['category'].map(category_mapping)
-    df_melted = df_melted.dropna(subset=['mean'])
-
-    # df['obs'] = df['obs'].astype(int)
-    plt.figure(figsize=(12, 6))
-
-    sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
-
-    plt.xlabel('Observed portion of the length of the femur [%]')
-    plt.ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
-    plt.title(
-        'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each).')
-
-    plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
-
-    plt.ylim(0, 25)
-
-    plt.tight_layout()
-    plt.show()
+    handler.generate_plots(data_dict)
 
 
 def trial():
@@ -129,7 +76,7 @@ def trial():
     meshes, _ = custom_io.read_meshes(REL_PATH_MESH, DEVICE)
     loo = torch.randint(0, len(meshes), (1,)).item()
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
-    obs = 0.5
+    obs = 0.2
     target = meshes[loo]
     del meshes[loo]
     z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
@@ -246,5 +193,8 @@ def loocv():
 if __name__ == "__main__":
     if RUN_WHOLE_EXPERIMENT:
         loocv()
+    elif GENERATE_PLOTS:
+        plot()
     else:
         trial()
+

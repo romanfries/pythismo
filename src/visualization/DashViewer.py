@@ -136,6 +136,8 @@ class ModelVisualizer:
             html.H1("3D Model Analyser", style={'text-align': 'center'}),
             html.Div([
                 dcc.Graph(id='mesh-plot', style={'width': '100%', 'height': '80vh', 'display': 'inline-block'}),
+                html.Button('Draw Random Sample', id='randomize-button', n_clicks=0,
+                            style={'display': 'block', 'margin': '20px auto'}),
                 html.Div(sliders,
                          style={'width': '20%', 'display': 'inline-block', 'vertical-align': 'top', 'padding': '10px'}),
                 html.Div(translation_sliders,
@@ -161,8 +163,7 @@ class ModelVisualizer:
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.cpu().numpy(), [meshio.CellBlock('triangle',
-                                                                           self.batched_ref.cells[
-                                                                               0].data.cpu().numpy())])
+                                                                           self.batched_ref.cells[0].data.cpu().numpy())])
             new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
@@ -191,6 +192,17 @@ class ModelVisualizer:
             )
 
             return mesh_figure
+
+        @callback(
+            [Output(f'param-{i}', 'value') for i in range(self.num_parameters - 6)],
+            Input('randomize-button', 'n_clicks')
+        )
+        def randomize_parameters(n_clicks):
+            if n_clicks > 0:
+                random_params = torch.randn(self.num_parameters - 6).tolist()
+                return random_params
+            else:
+                return [0] * (self.num_parameters - 6)
 
         return layout
 
