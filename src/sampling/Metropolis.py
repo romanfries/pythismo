@@ -116,9 +116,9 @@ class PDMMetropolisSampler:
         self.sigma_rot = sigma_rot
         if self.uniform_pose_prior:
             self.sigma_trans, self.sigma_rot = 0.0, 0.0
-        self.old_posterior = None
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL)
+        self.old_posterior = self.posterior
         self.accepted_par = self.accepted_trans = self.accepted_rot = 0
         self.rejected_par = self.rejected_trans = self.rejected_rot = 0
         self.save_chain = save_full_mesh_chain
@@ -136,8 +136,7 @@ class PDMMetropolisSampler:
         :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
-        kwargs = {'batch_mesh': self.batch_mesh} if isinstance(self.proposal, FullClosestPointProposal) else {}
-        self.proposal.propose(parameter_proposal_type, **kwargs)
+        self.proposal.propose(parameter_proposal_type)
 
     def update_mesh(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -307,6 +306,7 @@ class PDMMetropolisSampler:
     def change_device(self, dev):
         # TODO: A bug occurs if the model is moved before the first iteration of the sampling has been executed. Not all
         #  tensors have already been initialised at this point.
+        # TODO: Full mesh chain and residuals are unaffected by this method and are not moved to the specified device.
         """
         Change the device on which the tensor operations are or will be allocated.
 
@@ -325,6 +325,13 @@ class PDMMetropolisSampler:
 
             self.old_posterior = self.old_posterior.to(dev)
             self.posterior = self.posterior.to(dev)
+
+            if self.save_chain and self.full_chain:
+                self.full_chain = list(torch.stack(self.full_chain).to(dev).unbind(dim=0))
+
+            if self.save_residuals and self.residuals_c and self.residuals_n:
+                self.residuals_c = list(torch.stack(self.residuals_c).to(dev).unbind(dim=0))
+                self.residuals_n = list(torch.stack(self.residuals_n).to(dev).unbind(dim=0))
 
             self.dev = dev
 

@@ -191,7 +191,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.prior_model.get_components())
         self.posterior_model, self.projection_matrix, self.mean_correction = None, None, None
         self.d = d
-        self.rint = torch.randint(0, self.batch_size, (1,))
+        self.rint = torch.randint(0, self.batch_size, (1,)).item()
         self.recalculation_period = recalculation_period
         self.counter = 0
 
@@ -401,10 +401,10 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.rotation = self.rotation.to(dev)
             self.chain = self.chain.to(dev)
             self.posterior = self.posterior.to(dev)
-            self.projection_matrix = self.projection_matrix.to(dev)
-            self.mean_correction = self.mean_correction.to(dev)
+            if self.counter > 0:
+                self.projection_matrix = self.projection_matrix.to(dev)
+                self.mean_correction = self.mean_correction.to(dev)
             self.prior_projection = self.prior_projection.to(dev)
-            self.projection_matrix = self.projection_matrix.to(dev)
 
             self.sigma_mod = self.sigma_mod.to(dev)
             self.sigma_trans = self.sigma_trans.to(dev)
@@ -419,7 +419,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.single_target.change_device(dev)
             self.batched_targets.change_device(dev)
             self.prior_model.change_device(dev)
-            self.posterior_model.change_device(dev)
+            if self.counter > 0:
+                self.posterior_model.change_device(dev)
 
             self.dev = dev
 

@@ -162,7 +162,7 @@ class GaussianRandomWalkProposal:
 
     def extend_chain(self):
         """
-        Internal method that is called when the tensors  self.chain/self.posterior are filled.
+        Internal method that is called when the tensors self.chain/self.posterior are filled.
         The existing Markov chain data is copied to new, larger tensors, which provide space for additional
         self.chain_length_step chain elements.
         """

@@ -1,5 +1,6 @@
 import warnings
-
+import arviz as az
+import numpy as np
 import torch
 
 
@@ -16,16 +17,9 @@ def acf(chain, max_lag=100, b_int=100, b_max=2000):
     return autocov / var
 
 
-def ess(chain, autocorrelations, b_int=100, b_max=2000):
-    # TODO: Write docstring.
-    chain_length = chain.shape[2]
-    N = chain_length - torch.arange(0, b_max + 1, b_int, device=chain.device)
-    autocorrelation_sums = torch.sum(autocorrelations, dim=2, keepdim=True)
-    return (N / (1 + 2 * autocorrelation_sums)).squeeze()
-
-
 class ChainAnalyser:
-    def __init__(self, sampler, proposal, model, observed, mesh_chain=None):
+    def __init__(self, sampler, proposal, model, observed, mesh_chain=None, auto_detect_burn_in=False,
+                 default_burn_in=2000):
         # TODO: Write docstring.
         self.sampler = sampler
         self.proposal = proposal
@@ -51,19 +45,23 @@ class ChainAnalyser:
             rotations = self.param_chain.view(self.num_parameters, -1)[-3:]
             self.num_points = mesh_chain.shape[0]
             self.mesh_chain = mesh_chain.view(self.num_points, 3, self.batch_size, self.chain_length)
+        if auto_detect_burn_in:
+            self.burn_in = self.detect_burn_in()
+        else:
+            self.burn_in = default_burn_in
 
-    def detect_burn_in(self, ix=10, max_lag=1000, b_int=100, b_max=2000):
+    def detect_burn_in(self, ix=46, b_int=100, b_max=2000):
         """
         The method calculates an approximation of the ESS (Effective Sample Size) for the chains with different burn-in
-        periods and uses this data to automatically detect the burn-in period.
+        periods and uses this data to automatically detect the burn-in period. The corresponding function from the ArviZ
+        library is used to determine the ESS values. As ArviZ does not offer GPU support, the calculation may be slow.
+        The current ArviZ implementation is similar to Stan, which uses Geyer’s initial monotone sequence criterion
+        (Geyer, 1992; Geyer, 2011).
         According to S. Funk et al., a good optimal burn-in length would be when the ESS has hit its maximum for all
         parameters (see https://sbfnk.github.io/mfiidd/index.html).
 
         :param ix: Specifies how many of the first main components of the model are included in the calculation.
         :type ix: int
-        :param max_lag: Specifies after how many elements the infinite sum of the autocorrelation values in the
-        approximate calculation of the ESS is truncated.
-        :type max_lag: int
         :param b_int: Interval of the tested burn-in period lengths.
         :type b_int: int
         :param b_max: Maximum of the tested burn-in period lengths.
@@ -71,23 +69,34 @@ class ChainAnalyser:
         :return: Determined burn-in period length.
         :rtype: int
         """
-        # TODO: Revise. Is this method suitable? What are good hyperparameters? Often does not provide reliable values
-        #  at the moment.
         # See https://emcee.readthedocs.io/en/stable/tutorials/autocorr/ for a more in-depth analysis of Monte Carlo
-        # errors. Include cross-correlations?
-        autocorrelations = acf(self.param_chain[:ix], max_lag, b_int, b_max)
-        ess_values = ess(self.param_chain[:ix], autocorrelations, b_int, b_max)
-        starts = torch.arange(0, b_max + 1, b_int, device=self.param_chain.device)
-        return starts[torch.max(torch.max(ess_values, dim=2)[1])].item()
+        # errors.
+        chain_cpu = self.param_chain[:ix, :, :].permute(1, 2, 0).cpu().numpy()
+        starts = np.arange(0, b_max + 1, b_int)
+        ess_values = np.zeros((ix, starts.shape[0]))
+        for idx, burn_in in enumerate(starts):
+            ess_values[:, idx] = az.ess(az.convert_to_inference_data(chain_cpu[:, burn_in:, :])).x.data
+        return starts[np.max(np.argmax(ess_values, axis=1))]
 
-    def mean_dist_to_target_post(self, burn_in=2000):
+    def ess(self, ix=52):
+        """
+        The method calculates an approximation of the ESS (Effective Sample Size) for every parameter. The corresponding
+        function from the ArviZ library is used to determine the ESS values. As ArviZ does not offer GPU support, the
+        calculation may be slow. The current ArviZ implementation is similar to Stan, which uses Geyer’s initial
+        monotone sequence criterion (Geyer, 1992; Geyer, 2011).
+
+        :param ix: Specifies how many of the first main components of the model are included in the calculation.
+        :type ix: int
+        """
+        chain_cpu = self.param_chain[:ix, :, self.burn_in:].permute(1, 2, 0).cpu().numpy()
+        return torch.tensor(az.ess(az.convert_to_inference_data(chain_cpu)).x.data.astype(np.float32),
+                            device=self.param_chain.device)
+
+    def mean_dist_to_target_post(self):
         """
         Calculates the average distance of each point of the target to the sampled instances across all chains and
         samples.
 
-        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
-        for the calculation.
-        :type burn_in: int
         :return: Tuple with two elements:
         - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
         reconstructed mesh instances by utilising the known correspondences with shape (num_points,).
@@ -95,18 +104,15 @@ class ChainAnalyser:
         instances with shape (num_points,).
         :rtype: tuple
         """
-        residuals_c_view = self.residuals_c[:, :, burn_in:].reshape(self.num_points, -1)
-        residuals_n_view = self.residuals_n[:, :, burn_in:].reshape(self.num_points, -1)
+        residuals_c_view = self.residuals_c[:, :, self.burn_in:].reshape(self.num_points, -1)
+        residuals_n_view = self.residuals_n[:, :, self.burn_in:].reshape(self.num_points, -1)
         return residuals_c_view.mean(dim=1), residuals_n_view.mean(dim=1)
 
-    def mean_dist_to_target_map(self, burn_in=2000):
+    def mean_dist_to_target_map(self):
         """
         Calculates the average distance of each point of the target to the maximum a posteriori (MAP) estimate across
         all chains.
 
-        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
-        for the calculation.
-        :type burn_in: int
         :return: Tuple with two elements:
         - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
         reconstructed mesh instance by utilising the known correspondences with shape (num_points,).
@@ -114,45 +120,37 @@ class ChainAnalyser:
         instance with shape (num_points,).
         :rtype: tuple
         """
-        map_indices = torch.max(self.posterior[:, burn_in:], dim=1)[1]
-        return self.residuals_c[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1), \
-            self.residuals_n[:, :, burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1)
+        map_indices = torch.max(self.posterior[:, self.burn_in:], dim=1)[1]
+        return self.residuals_c[:, :, self.burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1), \
+            self.residuals_n[:, :, self.burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1)
 
-    def avg_variance_per_point_post(self, burn_in=2000):
+    def avg_variance_per_point_post(self):
         """
         Calculates the variance of all the points in the reconstructed mesh instances across all chains and samples.
 
-        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
-        for the calculation.
-        :type burn_in: int
         :return: Tensor containing the variances mentioned above.
         :rtype: torch.Tensor
         """
-        mesh_chain_view = self.mesh_chain[:, :, :, burn_in:].reshape(self.num_points, 3, -1)
+        mesh_chain_view = self.mesh_chain[:, :, :, self.burn_in:].reshape(self.num_points, 3, -1)
         return mesh_chain_view.var(dim=2).mean(dim=1)
 
-    def avg_variance_per_point_map(self, burn_in=2000):
+    def avg_variance_per_point_map(self):
         """
         Calculates the variance of all the points of the maximum a posteriori (MAP) estimates across all chains.
 
-        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
-        for the calculation.
-        :type burn_in: int
         :return: Tensor containing the variances mentioned above.
         :rtype: torch.Tensor
         """
-        map_indices = torch.max(self.posterior[:, burn_in:], dim=1)[1]
-        return self.mesh_chain[:, :, :, burn_in:][:, :, torch.arange(self.batch_size), map_indices].var(dim=2).mean(
+        map_indices = torch.max(self.posterior[:, self.burn_in:], dim=1)[1]
+        return self.mesh_chain[:, :, :, self.burn_in:][:, :, torch.arange(self.batch_size), map_indices].var(
+            dim=2).mean(
             dim=1)
 
-    def posterior_analytics(self, burn_in=2000):
+    def posterior_analytics(self):
         """
         Calculates/determines the mean, maximum, minimum and variances of the unnormalised log density posterior value
         of all chains/batch elements.
 
-        :param burn_in: Determined burn-in period length. This many samples at the beginning of the chains are ignored
-        for the calculation.
-        :type burn_in: int
         :return: Tuple with four elements:
         - torch.Tensor: Tensor containing the mean of the unnormalised log density posterior value of all chains/batch
          elements with shape (batch_size,).
@@ -164,9 +162,9 @@ class ChainAnalyser:
         chains/batch elements with shape (batch_size,).
         :rtype: tuple
         """
-        means, mins, maxs, vars = self.posterior[:, burn_in:].mean(dim=1), \
-        torch.min(self.posterior[:, burn_in:], dim=1)[0], torch.max(self.posterior[:, burn_in:], dim=1)[
-            0], self.posterior[:, burn_in:].var(dim=1)
+        means, mins, maxs, vars = self.posterior[:, self.burn_in:].mean(dim=1), \
+            torch.min(self.posterior[:, self.burn_in:], dim=1)[0], torch.max(self.posterior[:, self.burn_in:], dim=1)[
+            0], self.posterior[:, self.burn_in:].var(dim=1)
         return means, mins, maxs, vars
 
     def data_to_json(self, loo, obs):
@@ -181,6 +179,7 @@ class ChainAnalyser:
         :return: String containing the data in .json format.
         :rtype: str
         """
+        ess = self.ess()
         mean_dist_c_post, mean_dist_n_post = self.mean_dist_to_target_post()
         mean_dist_c_map, mean_dist_n_map = self.mean_dist_to_target_map()
         avg_var_post = self.avg_variance_per_point_post()
@@ -192,6 +191,9 @@ class ChainAnalyser:
             'identifiers': {
                 'reconstructed_shape': loo,
                 'percentage_observed': obs
+            },
+            'effective_sample_sizes': {
+                'ess_per_param': ess.tolist()
             },
             'accuracy': {
                 'mean_dist_corr_post': mean_dist_c_post.tolist(),

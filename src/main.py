@@ -36,7 +36,7 @@ REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
 REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/gr"
 
 BATCH_SIZE = 2
-CHAIN_LENGTH = 2001
+CHAIN_LENGTH = 0
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
@@ -90,6 +90,7 @@ def trial():
     dec_target = target.simplify_ref(meshes[0], shape)
     dec_part_target, _, _ = dec_target.partial_shape(0, 0, obs, True, plane_normal, plane_origin)
     dists = distance_to_closest_point(dec_target.tensor_points.unsqueeze(-1), dec_part_target.tensor_points, 1)
+    observed = (dists < 1e-6).squeeze()
     batched_target = BatchTorchMesh(dec_part_target, 'target', DEVICE, BATCH_SIZE)
     starting_params = torch.zeros(model.rank, device=DEVICE)
     shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
@@ -103,7 +104,8 @@ def trial():
                                            PROB_TRANS, PROB_ROT, CP_D, CP_RECALCULATION_PERIOD)
     sampler = PDMMetropolisSampler(model, random_walk, batched_shape, batched_target, correspondences=False,
                                    uniform_pose_prior=UNIFORM_POSE_PRIOR, sigma_trans=SIGMA_PRIOR_TRANS,
-                                   sigma_rot=SIGMA_PRIOR_ROT)
+                                   sigma_rot=SIGMA_PRIOR_ROT, save_full_mesh_chain=True,
+                                   save_residuals=True)
 
     generator = torch.Generator(device=DEVICE)
     for i in tqdm(range(CHAIN_LENGTH)):
@@ -118,7 +120,6 @@ def trial():
         sampler.determine_quality(proposal)
         sampler.decide(proposal, dec_target)
 
-    # TODO: Check whether all the data is correctly moved.
     batched_shape.change_device(torch.device("cpu"))
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
