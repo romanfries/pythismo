@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 
 from enum import Enum
@@ -59,8 +61,12 @@ class GaussianRandomWalkProposal:
 
         self.chain_length = 0
         self.chain_length_step = chain_length_step
-        self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0), device=self.dev)
-        self.posterior = torch.zeros((self.batch_size, 0), device=self.dev)
+        # self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0), device=self.dev)
+        self.chain = []
+        # self.posterior = torch.zeros((self.batch_size, 0), device=self.dev)
+        self.posterior = []
+
+        self.sampling_completed = False
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -69,6 +75,10 @@ class GaussianRandomWalkProposal:
         :param parameter_proposal_type: Specifies which parameters are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
+        if self.sampling_completed:
+            warnings.warn("Warning: Sampling has already ended for this proposal instance.",
+                          UserWarning)
+            return
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
@@ -126,20 +136,8 @@ class GaussianRandomWalkProposal:
         :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
         the new parameter values were accepted (=True) or rejected (=False).
         :type decider: torch.Tensor
-        :param posterior: Tensor with shape (batch_size,) containing the new log-density values of the posterior
+        :param posterior: Tensor with shape (batch_size,) containing the new log-density values of the posterior.
         :type posterior: torch.Tensor
-        """
-        self.update_parameters(decider)
-        self.update_chain(posterior)
-
-    def update_parameters(self, decider):
-        """
-        Internal method that updates the parameters and the log-density values of the posterior according to the
-        information from the passed decider.
-
-        :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
-        the new parameter values were accepted (=True) or rejected (=False).
-        :type decider: torch.Tensor
         """
         self.parameters = torch.where(decider.unsqueeze(0), self.parameters,
                                       self.old_parameters)
@@ -149,31 +147,9 @@ class GaussianRandomWalkProposal:
         self.old_translation = None
         self.old_rotation = None
 
-    def update_chain(self, posterior):
-        """
-        Internal method that appends the current parameters and log-density values of the posterior to the Markov chain.
-        """
-        if self.chain_length % self.chain_length_step == 0:
-            self.extend_chain()
-
-        self.chain[:, :, self.chain_length] = torch.cat((self.parameters, self.translation, self.rotation), dim=0)
-        self.posterior[:, self.chain_length] = posterior
+        self.chain.append(torch.cat((self.parameters, self.translation, self.rotation), dim=0))
+        self.posterior.append(posterior)
         self.chain_length += 1
-
-    def extend_chain(self):
-        """
-        Internal method that is called when the tensors self.chain/self.posterior are filled.
-        The existing Markov chain data is copied to new, larger tensors, which provide space for additional
-        self.chain_length_step chain elements.
-        """
-        updated_chain = torch.zeros((self.num_parameters + 6, self.batch_size, self.chain_length +
-                                     self.chain_length_step), device=self.dev)
-        updated_chain[:, :, :self.chain_length] = self.chain
-        updated_posterior = torch.zeros((self.batch_size, self.chain_length +
-                                         self.chain_length_step), device=self.dev)
-        updated_posterior[:, :self.chain_length] = self.posterior
-        self.chain = updated_chain
-        self.posterior = updated_posterior
 
     def change_device(self, dev):
         """
@@ -189,8 +165,12 @@ class GaussianRandomWalkProposal:
             self.parameters = self.parameters.to(dev)
             self.translation = self.translation.to(dev)
             self.rotation = self.rotation.to(dev)
-            self.chain = self.chain.to(dev)
-            self.posterior = self.posterior.to(dev)
+            if not self.sampling_completed and self.chain_length > 0:
+                self.chain = list(torch.stack(self.chain).to(dev).unbind(dim=0))
+                self.posterior = list(torch.stack(self.posterior).to(dev).unbind(dim=0))
+            elif self.sampling_completed and self.chain_length > 0:
+                self.chain = self.chain.to(dev)
+                self.posterior = self.posterior.to(dev)
 
             self.sigma_mod = self.sigma_mod.to(dev)
             self.sigma_trans = self.sigma_trans.to(dev)
@@ -201,3 +181,10 @@ class GaussianRandomWalkProposal:
             self.prob_rot = self.prob_rot.to(dev)
 
             self.dev = dev
+
+    def close(self):
+        # TODO: Write docstring.
+        if self.chain_length > 0:
+            self.chain = torch.stack(self.chain).permute(1, 2, 0)
+            self.posterior = torch.t(torch.stack(self.posterior))
+        self.sampling_completed = True

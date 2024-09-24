@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import meshio
 import numpy as np
@@ -193,7 +194,6 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.d = d
         self.rint = torch.randint(0, self.batch_size, (1,)).item()
         self.recalculation_period = recalculation_period
-        self.counter = 0
 
     def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
         """
@@ -326,7 +326,11 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :param parameter_proposal_type: Specifies which parameters are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
-        if self.counter % self.recalculation_period == 0:
+        if self.sampling_completed:
+            warnings.warn("Warning: Sampling has already ended for this proposal instance.",
+                          UserWarning)
+            return
+        if self.chain_length % self.recalculation_period == 0:
             self.posterior_model, self.projection_matrix, self.mean_correction = self.calculate_posterior_model()
 
         if parameter_proposal_type == ParameterProposalType.MODEL:
@@ -362,9 +366,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.rotation = self.rotation + perturbations * sigma_rot
             # self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
 
-        self.counter += 1
-
-    def update_parameters(self, decider):
+    def update(self, decider, posterior):
         """
         Internal method that updates the parameters and the log-density values of the posterior according to the
         information from the passed decider.
@@ -372,6 +374,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :param decider: Boolean tensor of the shape (batch_size,), which indicates for each element of the batch whether
         the new parameter values were accepted (=True) or rejected (=False).
         :type decider: torch.Tensor
+        :param posterior: Tensor with shape (batch_size,) containing the new log-density values of the posterior.
+        :type posterior: torch.Tensor
         """
         self.parameters = torch.where(decider.unsqueeze(0), self.parameters,
                                       self.old_parameters)
@@ -383,6 +387,10 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.old_posterior_parameters = None
         self.old_translation = None
         self.old_rotation = None
+
+        self.chain.append(torch.cat((self.parameters, self.translation, self.rotation), dim=0))
+        self.posterior.append(posterior)
+        self.chain_length += 1
 
     def change_device(self, dev):
         """
@@ -399,9 +407,13 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.posterior_parameters = self.posterior_parameters.to(dev)
             self.translation = self.translation.to(dev)
             self.rotation = self.rotation.to(dev)
-            self.chain = self.chain.to(dev)
-            self.posterior = self.posterior.to(dev)
-            if self.counter > 0:
+            if not self.sampling_completed and self.chain_length > 0:
+                self.chain = list(torch.stack(self.chain).to(dev).unbind(dim=0))
+                self.posterior = list(torch.stack(self.posterior).to(dev).unbind(dim=0))
+            elif self.sampling_completed and self.chain_length > 0:
+                self.chain = self.chain.to(dev)
+                self.posterior = self.posterior.to(dev)
+            if self.chain_length > 0:
                 self.projection_matrix = self.projection_matrix.to(dev)
                 self.mean_correction = self.mean_correction.to(dev)
             self.prior_projection = self.prior_projection.to(dev)
@@ -419,7 +431,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             self.single_target.change_device(dev)
             self.batched_targets.change_device(dev)
             self.prior_model.change_device(dev)
-            if self.counter > 0:
+            if self.chain_length > 0:
                 self.posterior_model.change_device(dev)
 
             self.dev = dev

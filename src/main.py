@@ -27,16 +27,17 @@ from visualization.DashViewer import MainVisualizer
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-RUN_WHOLE_EXPERIMENT = False
+RUN_WHOLE_EXPERIMENT = True
 GENERATE_PLOTS = False
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/gr"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/klo"
 
-BATCH_SIZE = 2
-CHAIN_LENGTH = 0
+# TODO: Errors occur if batch size 1 is selected.
+BATCH_SIZE = 20
+CHAIN_LENGTH = 22000
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
@@ -119,6 +120,7 @@ def trial():
         sampler.propose(proposal)
         sampler.determine_quality(proposal)
         sampler.decide(proposal, dec_target)
+    random_walk.close()
 
     batched_shape.change_device(torch.device("cpu"))
     model.change_device(torch.device("cpu"))
@@ -181,6 +183,7 @@ def loocv():
                 sampler.propose(proposal)
                 sampler.determine_quality(proposal)
                 sampler.decide(proposal, dec_target)
+            random_walk.close()
 
             analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
             # analyser.detect_burn_in()

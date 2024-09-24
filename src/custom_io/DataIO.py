@@ -25,6 +25,7 @@ class DataHandler:
             json.dump(data, f, indent=4)
 
     def read_all_statistics(self):
+        # TODO: Also read in the ESS.
         mean_dist_c_post_list, mean_dist_n_post_list, mean_dist_c_map_list, mean_dist_n_map_list = [], [], [], []
         avg_var_post_list, avg_var_map_list = [], []
         means_list, mins_list, maxs_list, vars_list = [], [], [], []
@@ -112,6 +113,7 @@ class DataHandler:
         return stacked_data
 
     def read_single_statistics(self, loo, obs):
+        # TODO: Also read in the ESS.
         input_filename = f'mcmc_{loo}_{obs}.json'
         input_file = self.statistics_dir / input_filename
         with open(input_file, 'r') as f:

@@ -304,9 +304,6 @@ class PDMMetropolisSampler:
         return ratio_par, ratio_trans, ratio_rot, ratio_tot
 
     def change_device(self, dev):
-        # TODO: A bug occurs if the model is moved before the first iteration of the sampling has been executed. Not all
-        #  tensors have already been initialised at this point.
-        # TODO: Full mesh chain and residuals are unaffected by this method and are not moved to the specified device.
         """
         Change the device on which the tensor operations are or will be allocated.
 
