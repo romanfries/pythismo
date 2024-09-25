@@ -80,8 +80,8 @@ class ICPAnalyser:
 
         :param meshes: List or BatchTorchMesh of mesh instances to be aligned.
         :type meshes: list of TorchMeshGpu or BatchTorchMesh
-        :param references: Optional, BatchTorchMesh with individual targets for the elements of 'meshes'.
-        :type references: None or BatchTorchMesh
+        :param targets: Optional, BatchTorchMesh with individual targets for the elements of 'meshes'.
+        :type targets: None or BatchTorchMesh
         :param iterations: Maximum number of iterations for the alignment.
         :type iterations: int
         :param mode: Defines whether the class operates in SINGLE or BATCHED mode.
@@ -113,7 +113,8 @@ class ICPAnalyser:
             target_points = target_points.unsqueeze(0).expand(reference_points.size()[0], -1, -1)
             icp_solution = pytorch3d.ops.iterative_closest_point(target_points, reference_points,
                                                                  max_iterations=self.iterations)
-            transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1), torch.linalg.inv(icp_solution.RTs.R))
+            transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1),
+                                              torch.linalg.inv(icp_solution.RTs.R))
             _ = list(map(lambda x, y: x.set_points(y, reset_com=True), self.reference, transformed_points))
         elif self.mode == ICPMode.BATCHED:
             if self.target.tensor_points.shape[2] != self.reference.tensor_points.shape[2]:

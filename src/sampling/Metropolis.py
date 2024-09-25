@@ -3,13 +3,12 @@ import warnings
 
 import torch
 from pytorch3d.loss.point_mesh_distance import point_face_distance
-from torch.distributions import Uniform
 
-from src.sampling.proposals.ClosestPoint import FullClosestPointProposal
-from src.sampling.proposals.GaussRandWalk import ParameterProposalType
+from src.sampling.proposals import ParameterProposalType
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_mod, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
+def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_mod,
+                               uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
     """
     Calculates the unnormalised log posterior given the distance of each point of the target to its closest point on the
     surface of the current shape and the model parameters of the current shape.
@@ -36,6 +35,9 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     :type sigma_lm: float
     :param sigma_mod: Variance of the model parameters (prior term calculation).
     :type sigma_mod: float
+    :param uniform_pose_prior: If True, an uninformed prior distribution is used for the pose parameters. If False, then
+    a zero-mean Gaussian distribution with variances sigma_trans, sigma_rot is assumed.
+    :type uniform_pose_prior: bool
     :param sigma_trans: Variance of the translation parameters (prior term calculation).
     :type sigma_trans: float
     :param sigma_rot: Variance of the rotation parameters (prior term calculation).
@@ -48,11 +50,8 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
-        dev = distances.device
-        uniform_translation_prior = Uniform(torch.tensor(-100, device=dev), torch.tensor(100, device=dev))
-        uniform_rotation_prior = Uniform(torch.tensor(-math.pi, device=dev), torch.tensor(math.pi, device=dev))
-        log_translation = torch.sum(uniform_translation_prior.log_prob(translation), dim=0)
-        log_rotation = torch.sum(uniform_rotation_prior.log_prob(rotation), dim=0)
+        log_translation = torch.zeros_like(log_likelihoods)
+        log_rotation = torch.zeros_like(log_likelihoods)
     else:
         log_translation = 0.5 * torch.sum(-torch.pow(translation / sigma_trans, 2), dim=0)
         log_rotation = 0.5 * torch.sum(-torch.pow(rotation / sigma_rot, 2), dim=0)
@@ -60,7 +59,9 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False, save_residuals=False):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0,
+                 uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False,
+                 save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -72,13 +73,13 @@ class PDMMetropolisSampler:
         :param proposal: Proposal instance that defines how the new parameters are drawn for a new proposal.
         :type proposal: GaussianRandomWalkProposal
         :param batch_mesh: Batch of meshes, which is used to construct the instances defined by the parameters and
-        compare them with the target (i.e., calculating the posterior).
+        compare them with the target (i.e., calculating the unnormalised posterior value).
         :type batch_mesh: BatchTorchMesh
         :param target: Observed (partial) shape to be analysed. Remark: It is required that the target has the same
         ‘batch_size’ as ‘batch_mesh’.
         :type target: BatchTorchMesh
-        :param correspondences: Boolean variable that determines whether there are point correspondences between
-        references and target.
+        :param correspondences: Boolean variable that determines whether there are known point correspondences between
+        the model and the target.
         :type correspondences: bool
         :param sigma_lm: Variance used (in square millimetres) when determining the likelihood term of the posterior.
         For the likelihood term, the L2 distance (independent point evaluator likelihood) is used. The L2 distance is
@@ -87,16 +88,17 @@ class PDMMetropolisSampler:
         :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
         solution towards a more likely shape by penalizing unlikely shape deformations.
         :type sigma_prior: float
-        # TODO: Adjust docstring.
-        :param uniform_pose_prior:
+        :param uniform_pose_prior: If True, an uninformed prior distribution is used for the pose parameters when
+        determining the prior term of the posterior. If False, a zero-mean Gaussian distribution with variances
+        sigma_trans, sigma_rot is assumed.
         :type uniform_pose_prior: bool
-        :param sigma_trans:
+        :param sigma_trans: Variance of the translation parameters (prior term calculation).
         :type sigma_trans: float
-        :param sigma_rot:
+        :param sigma_rot: Variance of the rotation parameters (prior term calculation).
         :type sigma_rot: float
-        :param save_full_mesh_chain:
+        :param save_full_mesh_chain: If True, the posterior meshes are saved. This requires a lot of memory.
         :type save_full_mesh_chain: bool
-        :param save_residuals:
+        :param save_residuals: If True, then the residuals are saved.
         :type save_residuals: bool
         """
         self.model = pdm
@@ -181,8 +183,6 @@ class PDMMetropolisSampler:
             # Does not support partial targets. The number of points of the current mesh instances and the target must
             # be identical (equal to the full number of model points N).
             differences = torch.sub(self.points, self.target_points)
-            # old draft
-            # posterior = unnormalised_posterior(differences, self.proposal.parameters, self.sigma_lm, self.sigma_prior)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
                                                    self.proposal.rotation, self.sigma_lm, self.sigma_prior,
@@ -227,13 +227,15 @@ class PDMMetropolisSampler:
         :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) were drawn during
         the current iteration.
         :type parameter_proposal_type: ParameterProposalType
+        :param full_target: Complete actual target instance. Only needs to be specified if the residuals are to be
+        saved.
+        :type full_target: TorchMeshGpu
         """
         # log-ratio!
         ratio = torch.exp(self.posterior - self.old_posterior)
         probabilities = torch.min(ratio, torch.ones_like(ratio))
         randoms = torch.rand(self.batch_size, device=self.dev)
         decider = torch.gt(probabilities, randoms)
-        # decider = torch.ones(self.batch_size).bool()
         self.posterior = torch.where(decider, self.posterior, self.old_posterior)
         self.proposal.update(decider, self.posterior)
         self.batch_mesh.update_points(decider)
@@ -256,6 +258,18 @@ class PDMMetropolisSampler:
             self.rejected_rot += (self.batch_size - decider.sum().item())
 
     def get_residual(self, full_target):
+        """
+        Calculates the distance from every point of the complete actual target to the current meshes.
+
+        :param full_target: Complete actual target instance.
+        :type full_target: TorchMeshGpu
+        :return: Tuple containing 2 elements:
+            - torch.Tensor: Distances from every point of the complete actual target to its corresponding point on the
+            current meshes with shape (num_points, batch_size).
+            - torch.Tensor: Distances from every point of the complete actual target to its closest point on the current
+            meshes with shape (num_points, batch_size).
+        :rtype: tuple
+        """
         # TODO: To save runtime, do not recalculate the residuals if the sample was rejected, but use the values of the
         #  predecessor.
         differences = torch.sub(self.points, full_target.tensor_points.unsqueeze(-1))
@@ -332,9 +346,17 @@ class PDMMetropolisSampler:
 
             self.dev = dev
 
-    def get_chain_and_residuals(self):
-        # TODO: Write docstring.
+    def get_dict_chain_and_residuals(self):
+        """
+        Returns the chain with the meshes and the residuals as a dictionary, which can then be saved on disk. This needs
+        a lot of memory.
+
+        :return: Above-mentioned dictionary.
+        :rtype: dict
+        """
         if self.save_chain and self.save_residuals:
             return {'chain': self.full_chain, 'res_corr': self.residuals_c, 'res_clp': self.residuals_n}
+        elif self.save_residuals:
+            return {'res_corr': self.residuals_c, 'res_clp': self.residuals_n}
         else:
             warnings.warn("Warning: Chains and residuals were not saved.", UserWarning)

@@ -1,10 +1,10 @@
 import pandas as pd
-import torch
 import json
 import seaborn as sns
 from pathlib import Path
-
 from matplotlib import pyplot as plt
+
+import torch
 
 
 class DataHandler:
@@ -25,7 +25,7 @@ class DataHandler:
             json.dump(data, f, indent=4)
 
     def read_all_statistics(self):
-        # TODO: Also read in the ESS.
+        ess_list = []
         mean_dist_c_post_list, mean_dist_n_post_list, mean_dist_c_map_list, mean_dist_n_map_list = [], [], [], []
         avg_var_post_list, avg_var_map_list = [], []
         means_list, mins_list, maxs_list, vars_list = [], [], [], []
@@ -38,6 +38,9 @@ class DataHandler:
         for json_file in json_files:
             with open(json_file, 'r') as f:
                 loaded_data = json.load(f)
+
+                ess = torch.tensor(loaded_data['effective_sample_sizes']['ess_per_param'])
+                ess_list.append(ess)
 
                 mean_dist_c_post = torch.tensor(loaded_data['accuracy']['mean_dist_corr_post'])
                 mean_dist_n_post = torch.tensor(loaded_data['accuracy']['mean_dist_clp_post'])
@@ -56,12 +59,12 @@ class DataHandler:
                 means = torch.tensor(loaded_data['unnormalised_log_density_posterior']['mean'])
                 mins = torch.tensor(loaded_data['unnormalised_log_density_posterior']['min'])
                 maxs = torch.tensor(loaded_data['unnormalised_log_density_posterior']['max'])
-                vars = torch.tensor(loaded_data['unnormalised_log_density_posterior']['var'])
+                vars_ = torch.tensor(loaded_data['unnormalised_log_density_posterior']['var'])
 
                 means_list.append(means)
                 mins_list.append(mins)
                 maxs_list.append(maxs)
-                vars_list.append(vars)
+                vars_list.append(vars_)
 
                 observed = torch.tensor(loaded_data['observed']['boolean'], dtype=torch.bool)
                 observed_list.append(observed)
@@ -83,6 +86,7 @@ class DataHandler:
                 obs_list.append(obs)
 
         stacked_data = {
+            'effective_sample_sizes': torch.stack(ess_list),
             'accuracy': {
                 'mean_dist_corr_post': torch.stack(mean_dist_c_post_list),
                 'mean_dist_clp_post': torch.stack(mean_dist_n_post_list),
@@ -113,11 +117,12 @@ class DataHandler:
         return stacked_data
 
     def read_single_statistics(self, loo, obs):
-        # TODO: Also read in the ESS.
         input_filename = f'mcmc_{loo}_{obs}.json'
         input_file = self.statistics_dir / input_filename
         with open(input_file, 'r') as f:
             loaded_data = json.load(f)
+
+            ess = torch.tensor(loaded_data['effective_sample_sizes']['ess_per_param'])
 
             mean_dist_c_post = torch.tensor(loaded_data['accuracy']['mean_dist_corr_post'])
             mean_dist_n_post = torch.tensor(loaded_data['accuracy']['mean_dist_clp_post'])
@@ -129,7 +134,7 @@ class DataHandler:
             means = torch.tensor(loaded_data['unnormalised_log_density_posterior']['mean'])
             mins = torch.tensor(loaded_data['unnormalised_log_density_posterior']['min'])
             maxs = torch.tensor(loaded_data['unnormalised_log_density_posterior']['max'])
-            vars = torch.tensor(loaded_data['unnormalised_log_density_posterior']['var'])
+            vars_ = torch.tensor(loaded_data['unnormalised_log_density_posterior']['var'])
 
             observed = torch.tensor(loaded_data['observed']['boolean'], dtype=torch.bool)
 
@@ -142,6 +147,7 @@ class DataHandler:
             obs = loaded_data['identifiers']['percentage_observed']
 
         data = {
+            'effective_sample_sizes': ess,
             'accuracy': {
                 'mean_dist_corr_post': mean_dist_c_post,
                 'mean_dist_clp_post': mean_dist_n_post,
@@ -154,7 +160,7 @@ class DataHandler:
                 'mean': means,
                 'min': mins,
                 'max': maxs,
-                'var': vars
+                'var': vars_
             },
             'observed': observed,
             'acceptance': {
@@ -171,10 +177,17 @@ class DataHandler:
 
         return data
 
-    def write_chain_and_residuals(self, chain_and_residuals, loo, obs):
-        output_filename = f'chain_{loo}_{obs}.pt'
+    def write_chain_and_residuals(self, dict_chain_and_residuals, loo, obs):
+        # There is currently no application implemented for stored chains and residuals.
+        output_filename = f'mesh_chain_{loo}_{obs}.pt'
         output_file = self.chain_dir / output_filename
-        torch.save(chain_and_residuals, output_file)
+        torch.save(dict_chain_and_residuals, output_file)
+
+    def write_param_chain_posterior(self, dict_param_chain_posterior, loo, obs):
+        # There is currently no application implemented for stored parameter chains.
+        output_filename = f'param_chain_{loo}_{obs}.pt'
+        output_file = self.chain_dir / output_filename
+        torch.save(dict_param_chain_posterior, output_file)
 
     def generate_plots(self, data_dict=None):
         # Needs to be adjusted depending on the experiments performed
@@ -341,7 +354,8 @@ class DataHandler:
         sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
         plt.xlabel('Observed portion of the length of the femur [%]')
-        plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
+        plt.ylabel(
+            r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
         plt.title(
             'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
             'each one)')
@@ -593,14 +607,3 @@ class DataHandler:
         png_plot_file = self.plot_dir / filename
         plt.savefig(png_plot_file)
         plt.close()
-
-
-
-
-
-
-
-
-
-
-

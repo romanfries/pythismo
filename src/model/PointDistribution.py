@@ -1,9 +1,8 @@
 import warnings
-
 import numpy as np
-import torch
-
 from scipy.interpolate import RBFInterpolator
+
+import torch
 
 
 def extract_points(meshes):
@@ -242,7 +241,7 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
 
 class PointDistributionModel:
     def __init__(self, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None, rank=None,
-                 dev=None):
+                 dev=None, tol=10e-6):
         """
         Class that defines and creates a point distribution model (PDM).
         This can be done in three different ways: It can be imported from a .h5 file, a complete set of mean vector and
@@ -315,8 +314,15 @@ class PointDistributionModel:
             self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered, self.rank)
             self.components = self.eigenvectors * torch.sqrt(self.eigenvalues)
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
-            self.parameters = get_parameters(self.points_centered, self.components)
+            # self.parameters = get_parameters(self.points_centered, self.components)
             self.decimated = False
+        # Eliminate components with an eigenvalue that is too small to prevent numerical instabilities
+        self.rank = torch.sum(self.eigenvalues > tol).item()
+        self.eigenvectors = self.eigenvectors[:, self.eigenvalues > tol]
+        self.components = self.components[:, self.eigenvalues > tol]
+        self.eigenvalues = self.eigenvalues[self.eigenvalues > tol]
+        if not self.read_in and not self.mean_and_cov:
+            self.parameters = get_parameters(self.points_centered, self.components)
 
     def get_eigenvalues(self):
         """

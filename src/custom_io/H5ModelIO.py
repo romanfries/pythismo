@@ -1,9 +1,8 @@
 from pathlib import Path
-
 import h5py
 import numpy as np
 
-from src.model.PointDistribution import PointDistributionModel, BatchedPointDistributionModel
+from src.model import PointDistributionModel
 
 
 def load_model_h5(file):

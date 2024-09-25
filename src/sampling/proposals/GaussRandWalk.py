@@ -1,8 +1,7 @@
 import warnings
+from enum import Enum
 
 import torch
-
-from enum import Enum
 
 
 class ParameterProposalType(Enum):
@@ -14,8 +13,7 @@ class ParameterProposalType(Enum):
 class GaussianRandomWalkProposal:
 
     def __init__(self, batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, prob_mod, prob_trans,
-                 prob_rot, chain_length_step=1000):
-        # TODO: Adjust docstring.
+                 prob_rot):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -31,15 +29,23 @@ class GaussianRandomWalkProposal:
         :type starting_parameters: torch.Tensor
         :param dev: An object representing the device on which the tensor operations are or will be allocated.
         :type dev: torch.device
-        :param sigma_mod: Variance of the model parameters.
-        :type sigma_mod: float
-        :param sigma_trans: Variance of the translation parameters.
-        :type sigma_trans: float
-        :param sigma_rot: Variance of the rotation parameters.
-        :type sigma_rot: float
-        :param chain_length_step: Step size with which the Markov chain is extended. If chain_length_step many
-        samples were drawn, the chain must be extended again accordingly.
-        :type chain_length_step: int
+        :param sigma_mod: Variance of the model parameters. The variances are given as a one-dimensional tensor of float
+        values.
+        :type sigma_mod: torch.Tensor
+        :param sigma_trans: Variance of the translation parameters. The variances are given as a one-dimensional tensor
+        of float values.
+        :type sigma_trans: torch.Tensor
+        :param sigma_rot: Variance of the rotation parameters. The variances are given as a one-dimensional tensor of
+        float values.
+        :type sigma_rot: torch.Tensor
+        :param prob_mod: One-dimensional tensor of floats with the same length as the variances for the model
+        parameters. The i-th value for the variance is selected with a probability equal to the i-th entry in this
+        tensor.
+        :type prob_mod: torch.Tensor
+        :param prob_trans: Same principle as for the model parameters.
+        :type prob_trans: torch.Tensor
+        :param prob_rot: Same principle as for the model parameters.
+        :type prob_rot: torch.Tensor
         """
         self.batch_size = batch_size
         self.dev = dev
@@ -60,10 +66,7 @@ class GaussianRandomWalkProposal:
         self.old_rotation = None
 
         self.chain_length = 0
-        self.chain_length_step = chain_length_step
-        # self.chain = torch.zeros((self.num_parameters + 6, self.batch_size, 0), device=self.dev)
         self.chain = []
-        # self.posterior = torch.zeros((self.batch_size, 0), device=self.dev)
         self.posterior = []
 
         self.sampling_completed = False
@@ -76,9 +79,10 @@ class GaussianRandomWalkProposal:
         :type parameter_proposal_type: ParameterProposalType
         """
         if self.sampling_completed:
-            warnings.warn("Warning: Sampling has already ended for this proposal instance.",
-                          UserWarning)
+            warnings.warn("Warning: Sampling has already ended for this proposal instance. No new parameter values can"
+                          "be proposed.", UserWarning)
             return
+
         if parameter_proposal_type == ParameterProposalType.MODEL:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
@@ -97,8 +101,6 @@ class GaussianRandomWalkProposal:
         else:
             sigma_rot = self.sigma_rot[torch.multinomial(self.prob_rot, 1).item()].item()
             self.rotation = self.rotation + perturbations * sigma_rot
-        # self.parameters = torch.zeros((self.num_parameters, self.batch_size))
-        # self.parameters = perturbations * self.sigma_mod
 
     def get_parameters(self):
         """
@@ -139,8 +141,7 @@ class GaussianRandomWalkProposal:
         :param posterior: Tensor with shape (batch_size,) containing the new log-density values of the posterior.
         :type posterior: torch.Tensor
         """
-        self.parameters = torch.where(decider.unsqueeze(0), self.parameters,
-                                      self.old_parameters)
+        self.parameters = torch.where(decider.unsqueeze(0), self.parameters, self.old_parameters)
         self.translation = torch.where(decider.unsqueeze(0), self.translation, self.old_translation)
         self.rotation = torch.where(decider.unsqueeze(0), self.rotation, self.old_rotation)
         self.old_parameters = None
@@ -183,8 +184,26 @@ class GaussianRandomWalkProposal:
             self.dev = dev
 
     def close(self):
-        # TODO: Write docstring.
+        """
+        Indicates to the instance that no more new parameter values are to be proposed. Converts the chain with the
+        parameter values and the log density posterior values from a list to a tensor, which can then be analysed and
+        further processed.
+        """
         if self.chain_length > 0:
             self.chain = torch.stack(self.chain).permute(1, 2, 0)
             self.posterior = torch.t(torch.stack(self.posterior))
         self.sampling_completed = True
+
+    def get_dict_param_chain_posterior(self):
+        """
+        Returns the chain with the parameter values and the log density posterior values as a dictionary, which can then
+        be saved on disk.
+
+        :return: Above-mentioned dictionary.
+        :rtype: dict
+        """
+        if self.sampling_completed:
+            return {'parameters': self.chain, 'posterior': self.posterior}
+        else:
+            warnings.warn("Warning: The parameter chain can only be saved once sampling has been completed with this "
+                          "proposal instance.", UserWarning)

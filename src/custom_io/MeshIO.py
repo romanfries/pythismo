@@ -3,23 +3,29 @@ from pathlib import Path
 
 import meshio
 
-from src.mesh.TMesh import TorchMeshGpu
+from src.mesh import TorchMeshGpu
 
 
-def read_and_simplify_meshes(read_path, write_path, dev, target=200):
+def read_and_simplify_registered_meshes(read_path, write_path, dev, target=200):
     rel_read_path = Path(read_path)
     rel_write_path = Path(write_path)
     read_path = Path.cwd().parent / rel_read_path
     write_path = Path.cwd().parent / rel_write_path
     meshes = []
     simplified_meshes = []
-    for file in read_path.iterdir():
+    simplified_ref_full, simplified_ref_dec = None, None
+    for idx, file in enumerate(read_path.iterdir()):
         if file.suffix == '.stl' or file.suffix == '.ply':
             mesh_read_io = MeshReaderWriter(file)
             mesh_write_io = MeshReaderWriter(write_path / file.name)
             mesh = mesh_read_io.read_mesh(dev)
             meshes.append(mesh)
-            simplified_mesh = mesh.simplify_qem(target)
+            if idx == 0:
+                simplified_ref_full = mesh
+                simplified_mesh = mesh.simplify_qem(target)
+                simplified_ref_dec = simplified_mesh
+            else:
+                simplified_mesh = mesh.simplify_ref(simplified_ref_full, simplified_ref_dec)
             mesh_write_io.write_mesh(simplified_mesh)
             simplified_meshes.append(simplified_mesh)
     return meshes, simplified_meshes
@@ -77,4 +83,6 @@ class MeshReaderWriter:
         write_path = self.file.parent
         write_path.mkdir(parents=True, exist_ok=True)
         file_path = write_path / mesh.id
+        mesh.change_device('cpu')
+        mesh.points = mesh.tensor_points
         meshio.write(file_path.with_suffix('.stl'), mesh)

@@ -6,7 +6,7 @@ import torch
 from dash import html, dcc, callback, Input, Output
 import plotly.graph_objects as go
 
-from src.mesh.TMesh import TorchMeshGpu
+from src.mesh import TorchMeshGpu
 
 
 class BatchMeshVisualizer:
@@ -163,18 +163,19 @@ class ModelVisualizer:
             rotation = params[-3:]
             points = self.model.get_points_from_parameters(params[:-6])
             new_mesh = meshio.Mesh(points.cpu().numpy(), [meshio.CellBlock('triangle',
-                                                                           self.batched_ref.cells[0].data.cpu().numpy())])
+                                                                           self.batched_ref.cells[
+                                                                               0].data.cpu().numpy())])
             new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
             new_torch_mesh.apply_translation(translation)
             new_torch_mesh.apply_rotation(rotation)
             x, y, z = new_torch_mesh.tensor_points.T
-            i, j, k = new_torch_mesh.cells[0].data.T
+            i_, j, k = new_torch_mesh.cells[0].data.T
             mesh_figure = go.Figure(data=[
                 go.Mesh3d(
                     x=x,
                     y=y,
                     z=z,
-                    i=i,
+                    i=i_,
                     j=j,
                     k=k,
                     color='lightpink',
@@ -239,7 +240,8 @@ class ChainVisualizer:
                         max=self.sampler.proposal.chain_length - 1,
                         step=1000,
                         value=0,
-                        marks={**{i: str(i) for i in range(999, self.sampler.proposal.chain_length + 1, 1000)}, **{0: '0'}}
+                        marks={**{i: str(i) for i in range(999, self.sampler.proposal.chain_length + 1, 1000)},
+                               **{0: '0'}}
                     )
                 ], style={'width': '100%', 'padding': '10px'})
             ], style={'display': 'flex', 'flexDirection': 'column', 'alignItems': 'center'})
@@ -321,6 +323,17 @@ class PosteriorVisualizer:
         layout = html.Div([
             html.H1("Trace Plots (Log Density Values)", style={'textAlign': 'center', 'marginTop': '10px'}),
             dcc.Graph(id='density-plot'),
+            html.Div([
+                html.Label('Remove a manually defined burn-in period from the density plot: '),
+                dcc.Input(
+                    id='x-axis-start',
+                    type='number',
+                    value=0,
+                    min=0,
+                    max=self.proposal.chain_length - 1,
+                    step=1
+                )
+            ], style={'margin': '10px'}),
             dcc.Slider(
                 id='slider',
                 min=0,
@@ -333,10 +346,14 @@ class PosteriorVisualizer:
 
         @callback(
             Output('density-plot', 'figure'),
-            Input('slider', 'value')
+            Input('slider', 'value'),
+            Input('x-axis-start', 'value')
         )
-        def update_figure(value):
-            x, y = torch.arange(0, self.proposal.chain_length, 1), self.posterior[value, :self.proposal.chain_length]
+        def update_figure(value, axis_start):
+            if axis_start is None or axis_start < 0:
+                axis_start = 0
+            x, y = torch.arange(axis_start, self.proposal.chain_length, 1), self.posterior[value,
+                                                                            axis_start:self.proposal.chain_length]
             figure = {
                 'data': [go.Scatter(x=x, y=y, mode='lines+markers', marker=dict(size=5))],
                 'layout': go.Layout(

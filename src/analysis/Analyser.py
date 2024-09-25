@@ -1,7 +1,9 @@
-import warnings
 import arviz as az
 import numpy as np
+
 import torch
+
+from src.mesh import get_transformation_matrix
 
 
 def acf(chain, max_lag=100, b_int=100, b_max=2000):
@@ -18,7 +20,7 @@ def acf(chain, max_lag=100, b_int=100, b_max=2000):
 
 
 class ChainAnalyser:
-    def __init__(self, sampler, proposal, model, observed, mesh_chain=None, auto_detect_burn_in=False,
+    def __init__(self, sampler, proposal, model, observed, mesh_chain=None, initial_com=None, auto_detect_burn_in=False,
                  default_burn_in=2000):
         # TODO: Write docstring.
         self.sampler = sampler
@@ -35,14 +37,19 @@ class ChainAnalyser:
         if mesh_chain is not None:
             self.mesh_chain = torch.stack(mesh_chain, dim=-1)  # (num_points, 3, batch_size, chain_length)
             self.num_points = self.mesh_chain.shape[0]
+            self.initial_com = None
         else:
-            warnings.warn("Warning: Functionality to reconstruct the mesh chain not yet implemented. Complete mesh "
-                          "chain must be provided as input.", UserWarning)
-            mesh_chain = self.model.get_points_from_parameters(self.param_chain.view(self.num_parameters, -1)[:-6])
-            # TODO: Apply the correct rotations and translations to the mesh chain. Currently, the correct mesh chain
-            #  must be given as input.
-            translations = self.param_chain.view(self.num_parameters, -1)[-6:-3]
-            rotations = self.param_chain.view(self.num_parameters, -1)[-3:]
+            self.initial_com = initial_com
+            mesh_chain = self.model.get_points_from_parameters(
+                self.param_chain.reshape(self.num_parameters + 6, -1)[:-6])
+            translations = self.param_chain.reshape(self.num_parameters + 6, -1)[-6:-3]
+            rotations = self.param_chain.reshape(self.num_parameters + 6, -1)[-3:]
+            rotation_matrices = get_transformation_matrix(rotations, batched_input=True)
+            mesh_chain = mesh_chain + (-self.initial_com.unsqueeze(0).unsqueeze(-1))
+            additional_cols = torch.ones((mesh_chain.size()[0], 1, mesh_chain.size()[2]), device=mesh_chain.device)
+            extended_points = torch.cat((mesh_chain, additional_cols), dim=1)
+            mesh_chain = torch.bmm(rotation_matrices.permute(2, 0, 1), extended_points.permute(2, 1, 0))[:, :3,
+                         :].permute(2, 1, 0) + (self.initial_com.unsqueeze(0).unsqueeze(-1)) + translations
             self.num_points = mesh_chain.shape[0]
             self.mesh_chain = mesh_chain.view(self.num_points, 3, self.batch_size, self.chain_length)
         if auto_detect_burn_in:

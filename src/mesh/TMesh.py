@@ -1,22 +1,25 @@
 import numpy as np
-import meshio
-import trimesh.proximity
-from trimesh import Trimesh
-
-import pytorch3d
-from meshio import Mesh
-import torch
-from quad_mesh_simplify import simplify_mesh
 import warnings
 
+import torch
+import meshio
+from meshio import Mesh
+import trimesh.proximity
+from trimesh import Trimesh
+import pytorch3d
+from quad_mesh_simplify import simplify_mesh
 
-def get_transformation_matrix(angles: torch.Tensor) -> torch.Tensor:
+
+def get_transformation_matrix(angles: torch.Tensor, batched_input=False) -> torch.Tensor:
     """
     Generates suitable transformation matrices for given Euler angles (ZYX convention).
 
     :param angles: Torch tensor with (optional: a batch of) Euler coordinates in radians (shape (3,) or
     (3, batch_size)).
     :type angles: torch.Tensor
+    :param batched_input: Boolean variable that specifies whether the returned transformation matrix should also be
+    given as a 3-dimensional tensor for batch size 1.
+    :type batched_input: bool
     :return: Torch tensor with (a batch of) transformation matrix/matrices (shape (4, 4) or (4, 4, batch_size)).
     :rtype: torch.Tensor
     """
@@ -40,7 +43,7 @@ def get_transformation_matrix(angles: torch.Tensor) -> torch.Tensor:
     transformation_matrices[2, 2, :] = cx * cy
     transformation_matrices[3, 3, :] = 1
 
-    if batch_size == 1:
+    if batch_size == 1 and not batched_input:
         transformation_matrices = transformation_matrices.squeeze(-1)
 
     return transformation_matrices
@@ -211,10 +214,6 @@ class TorchMeshGpu(Mesh):
 
         :param transform: Transformation matrix with shape (4, 4).
         :type transform: torch.Tensor
-        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
-        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
-        saving the old coordinates.
-        :type save_old: bool
         """
         additional_col = torch.ones((self.tensor_points.size()[0], 1), device=self.dev)
         extended_points = torch.cat((self.tensor_points, additional_col), dim=1)
@@ -222,34 +221,25 @@ class TorchMeshGpu(Mesh):
         transformed_points = transformed_points[:, :3]
         self.set_points(transformed_points)
 
-    def apply_translation(self, translation_parameters, save_old=False):
+    def apply_translation(self, translation_parameters):
         """
         Changes the points of the mesh by adding a (3,) translation vector.
 
         :param translation_parameters: Tensor with shape (3,) containing the translation parameters.
         :type translation_parameters: torch.Tensor
-        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
-        only relevant if the method is called from a BatchTorchMesh instance. TorchMesh does not offer the option of
-        saving the old coordinates.
-        :type save_old: bool
         """
         translated_points = self.tensor_points + translation_parameters
         self.set_points(translated_points)
 
-    def apply_rotation(self, rotation_parameters, save_old=False):
+    def apply_rotation(self, rotation_parameters):
         """
         Rotates the mesh instance using given Euler angles (ZYX convention).
 
-        :param rotation_parameters: Torch tensor with shape (3,) / (3, batch_size) [when called from a BatchTorchMesh
-        instance] containing the Euler angles (in radians).
+        :param rotation_parameters: Torch tensor with shape (3,) containing the Euler angles (in radians).
         :type rotation_parameters: torch.Tensor
-        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. Note: This is
-        only relevant if the method is called from a BatchTorchMesh instance. TorchMeshGpu does not offer the option of
-        saving the old coordinates.
-        :type save_old: bool
         """
         transformation = get_transformation_matrix(rotation_parameters)
-        self.apply_translation(- self.initial_com, save_old)
+        self.apply_translation(- self.initial_com)
         self.apply_transformation(transformation)
         self.apply_translation(self.initial_com)
 
@@ -480,6 +470,21 @@ class BatchTorchMesh(TorchMeshGpu):
             self.old_points = None
         self.set_points(translated_points, save_old)
 
+    def apply_rotation(self, rotation_parameters, save_old=False):
+        """
+        Rotates the mesh instance using given Euler angles (ZYX convention).
+
+        :param rotation_parameters: Torch tensor with shape (3, batch_size) containing the Euler angles (in radians).
+        :type rotation_parameters: torch.Tensor
+        :param save_old: Boolean value that specifies whether the old point coordinates should be saved. TorchMeshGpu
+        does not offer the option of saving the old coordinates.
+        :type save_old: bool
+        """
+        transformation = get_transformation_matrix(rotation_parameters, batched_input=True)
+        self.apply_translation(- self.initial_com, save_old)
+        self.apply_transformation(transformation)
+        self.apply_translation(self.initial_com)
+
     def update_points(self, decider):
         """
         Internal method that updates the point values according to the information from the passed decider.
@@ -531,13 +536,16 @@ class BatchTorchMesh(TorchMeshGpu):
         self.calculated_facet_normals = True
         self.cell_data.update({"facet_normals": [facet_normals]})
 
-    def partial_shape(self, idx1, idx2, ratio_observed):
+    def partial_shape(self, idx1, idx2, ratio_observed, plane_given=False, plane_normal=None, plane_origin=None):
         """
         This method should not be used for BatchTorchMesh instances.
 
         :param idx1:
         :param idx2:
         :param ratio_observed:
+        :param plane_given:
+        :param plane_normal:
+        :param plane_origin:
         """
         warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
                       UserWarning)
