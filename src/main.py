@@ -25,10 +25,10 @@ REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/cp"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/toy"
 
-BATCH_SIZE = 50
-CHAIN_LENGTH = 12000
+BATCH_SIZE = 20
+CHAIN_LENGTH = 22000
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
@@ -194,9 +194,10 @@ def loocv():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     # LOOCV (Leave-One-Out Cross-Validation) procedure
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
-    meshes, _ = read_meshes(REL_PATH_MESH, DEVICE)
+    meshes, _ = read_meshes(REL_PATH_MESH_DECIMATED, DEVICE)
     for percentage in PERCENTAGES_OBSERVED_LENGTH:
-        for l_ in range(len(meshes)):
+        # for l_ in range(len(meshes)):
+        for l_ in range(10):
             target = meshes[l_]
             del meshes[l_]
             z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \

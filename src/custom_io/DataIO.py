@@ -5,6 +5,7 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 
 class DataHandler:
@@ -86,7 +87,7 @@ class DataHandler:
                 obs_list.append(obs)
 
         stacked_data = {
-            'effective_sample_sizes': torch.stack(ess_list),
+            'effective_sample_sizes': pad_sequence(ess_list, batch_first=True),
             'accuracy': {
                 'mean_dist_corr_post': torch.stack(mean_dist_c_post_list),
                 'mean_dist_clp_post': torch.stack(mean_dist_n_post_list),
