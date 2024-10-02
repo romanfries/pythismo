@@ -12,15 +12,16 @@ class DataHandler:
     def __init__(self, rel_dir='datasets/output'):
         self.class_dir = Path(__file__).parent.parent.parent
         self.main_dir = self.class_dir / Path(rel_dir)
-        self.statistics_dir = self.main_dir / Path('statistics')
+        # self.statistics_dir = self.main_dir / Path('statistics')
+        self.statistics_dir = self.main_dir
         self.chain_dir = self.main_dir / Path('chains')
         self.plot_dir = self.main_dir / Path('plots')
         self.statistics_dir.mkdir(parents=True, exist_ok=True)
         self.chain_dir.mkdir(parents=True, exist_ok=True)
         self.plot_dir.mkdir(parents=True, exist_ok=True)
 
-    def write_statistics(self, data, loo, obs):
-        output_filename = f'mcmc_{loo}_{obs}.json'
+    def write_statistics(self, data, loo, obs, additional_param):
+        output_filename = f'mcmc_{loo}_{obs}_{additional_param}.json'
         output_file = self.statistics_dir / output_filename
         with open(output_file, 'w') as f:
             json.dump(data, f, indent=4)

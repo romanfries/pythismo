@@ -7,7 +7,7 @@ from pytorch3d.loss.point_mesh_distance import point_face_distance
 from src.sampling.proposals import ParameterProposalType
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, sigma_lm, sigma_mod,
+def unnormalised_log_posterior(distances, parameters, translation, rotation, gamma, sigma_lm, sigma_mod,
                                uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
     """
     Calculates the unnormalised log posterior given the distance of each point of the target to its closest point on the
@@ -30,6 +30,8 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     :param rotation: Tensor with the current rotation parameters of the current shapes considered with shape
     (3, batch_size).
     :type rotation: torch.Tensor
+    :param gamma: Multiplication factor of the likelihood term.
+    :type gamma: float
     :param sigma_lm: Variance of the zero-mean Gaussian, which is used to evaluate the L2 distances. The same variance
     value is used for all 3 dimensions (isotropic distribution).
     :type sigma_lm: float
@@ -46,7 +48,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
     :rtype: torch.Tensor
     """
     distances_squared = torch.pow(distances, 2)
-    log_likelihoods = 0.5 * torch.sum(sigma_lm * (-distances_squared), dim=0)
+    log_likelihoods = 0.5 * gamma * torch.mean(sigma_lm * (-distances_squared), dim=0)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -59,9 +61,9 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, sig
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, sigma_lm=1.0, sigma_prior=1.0,
-                 uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005, save_full_mesh_chain=False,
-                 save_residuals=False):
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, gamma=50.0, sigma_lm=1.0,
+                 sigma_prior=1.0, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005,
+                 save_full_mesh_chain=False, save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -81,6 +83,8 @@ class PDMMetropolisSampler:
         :param correspondences: Boolean variable that determines whether there are known point correspondences between
         the model and the target.
         :type correspondences: bool
+        :param gamma: Multiplication factor of the likelihood term.
+        :type gamma: float
         :param sigma_lm: Variance used (in square millimetres) when determining the likelihood term of the posterior.
         For the likelihood term, the L2 distance (independent point evaluator likelihood) is used. The L2 distance is
         evaluated using a zero-mean Gaussian with variance sigma_lm.
@@ -111,6 +115,7 @@ class PDMMetropolisSampler:
         self.target_points = self.target.tensor_points
         self.correspondences = correspondences
         self.batch_size = self.proposal.batch_size
+        self.gamma = gamma
         self.sigma_lm = sigma_lm
         self.sigma_prior = sigma_prior
         self.uniform_pose_prior = uniform_pose_prior
@@ -185,7 +190,7 @@ class PDMMetropolisSampler:
             differences = torch.sub(self.points, self.target_points)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.sigma_lm, self.sigma_prior,
+                                                   self.proposal.rotation, self.gamma, self.sigma_lm, self.sigma_prior,
                                                    self.uniform_pose_prior, self.sigma_trans, self.sigma_rot)
 
         else:
@@ -211,9 +216,9 @@ class PDMMetropolisSampler:
 
             # Target is a point cloud, reference a mesh.
             posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
-                                                   self.proposal.translation, self.proposal.rotation, self.sigma_lm,
-                                                   self.sigma_prior, self.uniform_pose_prior, self.sigma_trans,
-                                                   self.sigma_rot)
+                                                   self.proposal.translation, self.proposal.rotation, self.gamma,
+                                                   self.sigma_lm, self.sigma_prior, self.uniform_pose_prior,
+                                                   self.sigma_trans, self.sigma_rot)
 
         self.posterior = posterior
 
@@ -236,6 +241,7 @@ class PDMMetropolisSampler:
         probabilities = torch.min(ratio, torch.ones_like(ratio))
         randoms = torch.rand(self.batch_size, device=self.dev)
         decider = torch.gt(probabilities, randoms)
+        # decider = torch.ones_like(decider)
         self.posterior = torch.where(decider, self.posterior, self.old_posterior)
         self.proposal.update(decider, self.posterior)
         self.batch_mesh.update_points(decider)
@@ -316,6 +322,7 @@ class PDMMetropolisSampler:
         ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
         return ratio_par, ratio_trans, ratio_rot, ratio_tot
+        # return ratio_par, None, None, ratio_tot
 
     def change_device(self, dev):
         """

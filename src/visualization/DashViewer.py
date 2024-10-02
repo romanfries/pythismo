@@ -237,10 +237,10 @@ class ChainVisualizer:
                     dcc.Slider(
                         id='chain-slider',
                         min=0,
-                        max=self.sampler.proposal.chain_length - 1,
+                        max=self.sampler.proposal.chain_length,
                         step=1000,
                         value=0,
-                        marks={**{i: str(i) for i in range(999, self.sampler.proposal.chain_length + 1, 1000)},
+                        marks={**{i: str(i) for i in range(1000, self.sampler.proposal.chain_length + 1, 1000)},
                                **{0: '0'}}
                     )
                 ], style={'width': '100%', 'padding': '10px'})
@@ -257,16 +257,22 @@ class ChainVisualizer:
             prevent_initial_call=True
         )
         def update_display(batch, chain_element):
-            params = self.parameters[:, batch, chain_element]
-            translation = params[-6:-3]
-            rotation = params[-3:]
-            points = self.sampler.model.get_points_from_parameters(params[:-6])
-            new_mesh = meshio.Mesh(points.numpy(), [meshio.CellBlock('triangle',
-                                                                     self.sampler.batch_mesh.cells[
+            params = self.parameters[:, batch, chain_element - 1]
+            if chain_element > 0:
+                translation = params[-6:-3]
+                rotation = params[-3:]
+                points = self.sampler.model.get_points_from_parameters(params[:-6])
+                new_mesh = meshio.Mesh(points.numpy(), [meshio.CellBlock('triangle', self.sampler.batch_mesh.cells[
                                                                          0].data.numpy())])
-            new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
-            new_torch_mesh.apply_rotation(rotation)
-            new_torch_mesh.apply_translation(translation)
+                new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
+                new_torch_mesh.apply_rotation(rotation)
+                new_torch_mesh.apply_translation(translation)
+            else:
+                points = self.sampler.model.get_points_from_parameters(torch.zeros_like(params[:-6]))
+                new_mesh = meshio.Mesh(points.numpy(), [meshio.CellBlock('triangle', self.sampler.batch_mesh.cells[
+                    0].data.numpy())])
+                new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
+
             x, y, z = new_torch_mesh.tensor_points.T
             i, j, k = new_torch_mesh.cells[0].data.T
 

@@ -25,10 +25,10 @@ REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/toy"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/toy-sigma/statistics/sigma_200"
 
 BATCH_SIZE = 20
-CHAIN_LENGTH = 22000
+CHAIN_LENGTH = 2000
 DECIMATION_TARGET = 200
 
 MODEL_PROBABILITY = 0.6
@@ -38,16 +38,19 @@ ROTATION_PROBABILITY = 0.2
 PROPOSAL_TYPE = "CP_SIMPLE"
 
 SIGMA_MOD_GAUSS = torch.tensor([0.04, 0.08, 0.16], device=DEVICE)
-SIGMA_MOD_CP = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
-SIGMA_TRANS = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
+SIGMA_MOD_CP = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
+SIGMA_TRANS = torch.tensor([0.3, 0.6, 1.2], device=DEVICE)
 # Variance in radians
-SIGMA_ROT = torch.tensor([0.001, 0.002, 0.004], device=DEVICE)
+SIGMA_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
 PROB_MOD = PROB_TRANS = PROB_ROT = torch.tensor([0.2, 0.6, 0.2], device=DEVICE)
 
 UNIFORM_POSE_PRIOR = False
 # These two parameters are irrelevant when selecting a uniform pose prior
 SIGMA_PRIOR_TRANS = 30.0
 SIGMA_PRIOR_ROT = 0.01
+
+SIGMA_LIKELIHOOD_TERM = [1.0]
+GAMMA = 50.0
 
 CP_D = 1.0
 CP_RECALCULATION_PERIOD = 1000
@@ -75,6 +78,7 @@ def trial():
     loo = torch.randint(0, len(meshes), (1,)).item()
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
     obs = 0.2
+    sigma_likelihood = 1.0
     target = meshes[loo]
     del meshes[loo]
     z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
@@ -99,8 +103,8 @@ def trial():
                                            batched_target, model, SIGMA_MOD_CP, SIGMA_TRANS, SIGMA_ROT, PROB_MOD,
                                            PROB_TRANS, PROB_ROT, CP_D, CP_RECALCULATION_PERIOD)
     sampler = PDMMetropolisSampler(model, random_walk, batched_shape, batched_target, correspondences=False,
-                                   uniform_pose_prior=UNIFORM_POSE_PRIOR, sigma_trans=SIGMA_PRIOR_TRANS,
-                                   sigma_rot=SIGMA_PRIOR_ROT)
+                                   gamma=GAMMA, sigma_lm=sigma_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
+                                   sigma_trans=SIGMA_PRIOR_TRANS, sigma_rot=SIGMA_PRIOR_ROT)
 
     generator = torch.Generator(device=DEVICE)
     for _ in tqdm(range(CHAIN_LENGTH)):
@@ -195,61 +199,63 @@ def loocv():
     # LOOCV (Leave-One-Out Cross-Validation) procedure
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
     meshes, _ = read_meshes(REL_PATH_MESH_DECIMATED, DEVICE)
-    for percentage in PERCENTAGES_OBSERVED_LENGTH:
-        # for l_ in range(len(meshes)):
-        for l_ in range(10):
-            target = meshes[l_]
-            del meshes[l_]
-            z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-                torch.max(target.tensor_points, dim=0)[1][2].item()
-            part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage)
-            meshes.insert(0, part_target)
-            ICPAnalyser(meshes).icp()
-            del meshes[0]
-            model = PointDistributionModel(meshes=meshes)
-            shape = meshes[0]
-            dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
-            observed = (dists < 1e-6).squeeze()
-            batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
-            starting_params = torch.zeros(model.rank, device=DEVICE)
-            shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
-            batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
-            if PROPOSAL_TYPE == "GAUSS_RAND":
-                random_walk = GaussianRandomWalkProposal(BATCH_SIZE, starting_params, DEVICE, SIGMA_MOD_GAUSS,
-                                                         SIGMA_TRANS, SIGMA_ROT, PROB_MOD, PROB_TRANS, PROB_ROT)
-            elif PROPOSAL_TYPE == "CP_SIMPLE":
-                random_walk = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape,
-                                                   batched_target, model, SIGMA_MOD_CP, SIGMA_TRANS, SIGMA_ROT,
-                                                   PROB_MOD, PROB_TRANS, PROB_ROT, CP_D, CP_RECALCULATION_PERIOD)
-            sampler = PDMMetropolisSampler(model, random_walk, batched_shape, batched_target, correspondences=False,
-                                           uniform_pose_prior=UNIFORM_POSE_PRIOR, sigma_trans=SIGMA_PRIOR_TRANS,
-                                           sigma_rot=SIGMA_PRIOR_ROT, save_full_mesh_chain=True,
-                                           save_residuals=True)
+    for sigma_likelihood in SIGMA_LIKELIHOOD_TERM:
+        for percentage in PERCENTAGES_OBSERVED_LENGTH:
+            for l_ in range(len(meshes)):
+            # for l_ in range(10):
+                target = meshes[l_]
+                del meshes[l_]
+                z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+                    torch.max(target.tensor_points, dim=0)[1][2].item()
+                part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage)
+                meshes.insert(0, part_target)
+                ICPAnalyser(meshes).icp()
+                del meshes[0]
+                model = PointDistributionModel(meshes=meshes)
+                shape = meshes[0]
+                dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
+                observed = (dists < 1e-6).squeeze()
+                batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
+                starting_params = torch.zeros(model.rank, device=DEVICE)
+                shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
+                batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
+                if PROPOSAL_TYPE == "GAUSS_RAND":
+                    random_walk = GaussianRandomWalkProposal(BATCH_SIZE, starting_params, DEVICE, SIGMA_MOD_GAUSS,
+                                                             SIGMA_TRANS, SIGMA_ROT, PROB_MOD, PROB_TRANS, PROB_ROT)
+                elif PROPOSAL_TYPE == "CP_SIMPLE":
+                    random_walk = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape,
+                                                       batched_target, model, SIGMA_MOD_CP, SIGMA_TRANS, SIGMA_ROT,
+                                                       PROB_MOD, PROB_TRANS, PROB_ROT, CP_D, CP_RECALCULATION_PERIOD)
+                sampler = PDMMetropolisSampler(model, random_walk, batched_shape, batched_target, correspondences=False,
+                                               gamma=GAMMA, sigma_lm=sigma_likelihood,
+                                               uniform_pose_prior=UNIFORM_POSE_PRIOR, sigma_trans=SIGMA_PRIOR_TRANS,
+                                               sigma_rot=SIGMA_PRIOR_ROT, save_full_mesh_chain=True,
+                                               save_residuals=True)
 
-            generator = torch.Generator(device=DEVICE)
-            for _ in tqdm(range(CHAIN_LENGTH)):
-                random = torch.rand(1, device=DEVICE, generator=generator).item()
-                if random < MODEL_PROBABILITY:
-                    proposal = ParameterProposalType.MODEL
-                elif MODEL_PROBABILITY <= random < MODEL_PROBABILITY + TRANSLATION_PROBABILITY:
-                    proposal = ParameterProposalType.TRANSLATION
-                else:
-                    proposal = ParameterProposalType.ROTATION
-                sampler.propose(proposal)
-                sampler.determine_quality(proposal)
-                sampler.decide(proposal, target)
-            random_walk.close()
+                generator = torch.Generator(device=DEVICE)
+                for _ in tqdm(range(CHAIN_LENGTH)):
+                    random = torch.rand(1, device=DEVICE, generator=generator).item()
+                    if random < MODEL_PROBABILITY:
+                        proposal = ParameterProposalType.MODEL
+                    elif MODEL_PROBABILITY <= random < MODEL_PROBABILITY + TRANSLATION_PROBABILITY:
+                        proposal = ParameterProposalType.TRANSLATION
+                    else:
+                        proposal = ParameterProposalType.ROTATION
+                    sampler.propose(proposal)
+                    sampler.determine_quality(proposal)
+                    sampler.decide(proposal, target)
+                random_walk.close()
 
-            analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
-            # analyser.detect_burn_in()
-            data = analyser.data_to_json(l_, int(100 * percentage))
-            meshes.insert(l_, target)
-            handler.write_statistics(data, l_, int(100 * percentage))
-            # Code to save further data
-            # chain_residual_dict = sampler.get_dict_chain_and_residuals()
-            # handler.write_chain_and_residuals(chain_residual_dict, l, int(100 * percentage))
-            # param_chain_posterior_dict = random_walk.get_dict_param_chain_posterior()
-            # handler.write_param_chain_posterior(param_chain_posterior_dict, l, int(100 * percentage))
+                analyser = ChainAnalyser(sampler, random_walk, model, observed, sampler.full_chain)
+                # analyser.detect_burn_in()
+                data = analyser.data_to_json(l_, int(100 * percentage))
+                meshes.insert(l_, target)
+                handler.write_statistics(data, l_, int(100 * percentage), int(100 * sigma_likelihood))
+                # Code to save further data
+                # chain_residual_dict = sampler.get_dict_chain_and_residuals()
+                # handler.write_chain_and_residuals(chain_residual_dict, l, int(100 * percentage))
+                # param_chain_posterior_dict = random_walk.get_dict_param_chain_posterior()
+                # handler.write_param_chain_posterior(param_chain_posterior_dict, l, int(100 * percentage))
 
 
 if __name__ == "__main__":
