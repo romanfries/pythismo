@@ -38,7 +38,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     :param sigma_mod: Variance of the model parameters (prior term calculation).
     :type sigma_mod: float
     :param uniform_pose_prior: If True, an uninformed prior distribution is used for the pose parameters. If False, then
-    a zero-mean Gaussian distribution with variances sigma_trans, sigma_rot is assumed.
+    a zero-mean Gaussian distribution with variances var_trans, var_rot is assumed.
     :type uniform_pose_prior: bool
     :param sigma_trans: Variance of the translation parameters (prior term calculation).
     :type sigma_trans: float
@@ -48,7 +48,7 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     :rtype: torch.Tensor
     """
     distances_squared = torch.pow(distances, 2)
-    log_likelihoods = 0.5 * gamma * torch.mean(sigma_lm * (-distances_squared), dim=0)
+    log_likelihoods = 0.5 * gamma * (torch.mean(-distances_squared, dim=0) / sigma_lm)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -61,8 +61,8 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, gamma=50.0, sigma_lm=1.0,
-                 sigma_prior=1.0, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005,
+    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, gamma=50.0, var_like=1.0,
+                 var_prior_mod=1.0, uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005,
                  save_full_mesh_chain=False, save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
@@ -85,21 +85,21 @@ class PDMMetropolisSampler:
         :type correspondences: bool
         :param gamma: Multiplication factor of the likelihood term.
         :type gamma: float
-        :param sigma_lm: Variance used (in square millimetres) when determining the likelihood term of the posterior.
+        :param var_like: Variance used (in square millimetres) when determining the likelihood term of the posterior.
         For the likelihood term, the L2 distance (independent point evaluator likelihood) is used. The L2 distance is
-        evaluated using a zero-mean Gaussian with variance sigma_lm.
-        :type sigma_lm: float
-        :param sigma_prior: Variance used when determining the prior term of the posterior. The prior term pushes the
+        evaluated using a zero-mean Gaussian with variance var_like.
+        :type var_like: float
+        :param var_prior_mod: Variance used when determining the prior term of the posterior. The prior term pushes the
         solution towards a more likely shape by penalizing unlikely shape deformations.
-        :type sigma_prior: float
+        :type var_prior_mod: float
         :param uniform_pose_prior: If True, an uninformed prior distribution is used for the pose parameters when
         determining the prior term of the posterior. If False, a zero-mean Gaussian distribution with variances
-        sigma_trans, sigma_rot is assumed.
+        var_trans, var_rot is assumed.
         :type uniform_pose_prior: bool
-        :param sigma_trans: Variance of the translation parameters (prior term calculation).
-        :type sigma_trans: float
-        :param sigma_rot: Variance of the rotation parameters (prior term calculation).
-        :type sigma_rot: float
+        :param var_prior_trans: Variance of the translation parameters (prior term calculation).
+        :type var_prior_trans: float
+        :param var_prior_rot: Variance of the rotation parameters (prior term calculation).
+        :type var_prior_rot: float
         :param save_full_mesh_chain: If True, the posterior meshes are saved. This requires a lot of memory.
         :type save_full_mesh_chain: bool
         :param save_residuals: If True, then the residuals are saved.
@@ -116,18 +116,18 @@ class PDMMetropolisSampler:
         self.correspondences = correspondences
         self.batch_size = self.proposal.batch_size
         self.gamma = gamma
-        self.sigma_lm = sigma_lm
-        self.sigma_prior = sigma_prior
+        self.var_like = var_like
+        self.var_prior_mod = var_prior_mod
         self.uniform_pose_prior = uniform_pose_prior
-        self.sigma_trans = sigma_trans
-        self.sigma_rot = sigma_rot
+        self.var_prior_trans = var_prior_trans
+        self.var_prior_rot = var_prior_rot
         if self.uniform_pose_prior:
-            self.sigma_trans, self.sigma_rot = 0.0, 0.0
+            self.var_prior_trans, self.var_prior_rot = 0.0, 0.0
         self.posterior = None
-        self.determine_quality(ParameterProposalType.MODEL)
+        self.determine_quality(ParameterProposalType.MODEL_RANDOM)
         self.old_posterior = self.posterior
-        self.accepted_par = self.accepted_trans = self.accepted_rot = 0
-        self.rejected_par = self.rejected_trans = self.rejected_rot = 0
+        self.accepted_par = self.accepted_rnd = self.accepted_trans = self.accepted_rot = 0
+        self.rejected_par = self.rejected_rnd = self.rejected_trans = self.rejected_rot = 0
         self.save_chain = save_full_mesh_chain
         self.full_chain = []
         self.save_residuals = save_residuals
@@ -155,7 +155,8 @@ class PDMMetropolisSampler:
         :type parameter_proposal_type: ParameterProposalType
         """
         old_points = self.batch_mesh.tensor_points
-        if parameter_proposal_type == ParameterProposalType.MODEL:
+        if parameter_proposal_type == ParameterProposalType.MODEL_RANDOM or parameter_proposal_type == \
+                ParameterProposalType.MODEL_INFORMED:
             reconstructed_points = self.model.get_points_from_parameters(self.proposal.get_parameters())
             if self.batch_size == 1:
                 reconstructed_points = reconstructed_points.unsqueeze(2)
@@ -190,8 +191,9 @@ class PDMMetropolisSampler:
             differences = torch.sub(self.points, self.target_points)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.gamma, self.sigma_lm, self.sigma_prior,
-                                                   self.uniform_pose_prior, self.sigma_trans, self.sigma_rot)
+                                                   self.proposal.rotation, self.gamma, self.var_like,
+                                                   self.var_prior_mod, self.uniform_pose_prior, self.var_prior_trans,
+                                                   self.var_prior_rot)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
@@ -217,8 +219,8 @@ class PDMMetropolisSampler:
             # Target is a point cloud, reference a mesh.
             posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
                                                    self.proposal.translation, self.proposal.rotation, self.gamma,
-                                                   self.sigma_lm, self.sigma_prior, self.uniform_pose_prior,
-                                                   self.sigma_trans, self.sigma_rot)
+                                                   self.var_like, self.var_prior_mod, self.uniform_pose_prior,
+                                                   self.var_prior_trans, self.var_prior_rot)
 
         self.posterior = posterior
 
@@ -253,9 +255,12 @@ class PDMMetropolisSampler:
             self.residuals_c.append(residual_c)
             self.residuals_n.append(residual_n)
 
-        if parameter_proposal_type == ParameterProposalType.MODEL:
+        if parameter_proposal_type == ParameterProposalType.MODEL_INFORMED:
             self.accepted_par += decider.sum().item()
             self.rejected_par += (self.batch_size - decider.sum().item())
+        elif parameter_proposal_type == ParameterProposalType.MODEL_RANDOM:
+            self.accepted_rnd += decider.sum().item()
+            self.rejected_rnd += (self.batch_size - decider.sum().item())
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.accepted_trans += decider.sum().item()
             self.rejected_trans += (self.batch_size - decider.sum().item())
@@ -296,32 +301,34 @@ class PDMMetropolisSampler:
 
         # point to face squared distance: shape (P,)
         # requires dtype=torch.float32
-        point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(),
-                                                       tris_first_idx, max_points).reshape(
-            (-1, int(full_target.num_points)))
+        point_to_face_transposed = point_face_distance(points.float(), points_first_idx, tris.float(), tris_first_idx,
+                                                       max_points).reshape((-1, int(full_target.num_points)))
         point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
         residual_n = torch.sqrt(point_to_face)
 
         return residual_c, residual_n
 
     def acceptance_ratio(self):
+        # TODO: Handle the case where no ICP proposals are used. In this case, a division-by-zero error occurs.
         """
         Returns the ratio of accepted samples to the total number of random parameter draws.
 
-        :return: Tuple containing 4 float elements:
-            - Ratio of accepted proposals when the model parameters have been adjusted.
+        :return: Tuple containing 5 float elements:
+            - Ratio of accepted proposals when the model parameters have been adjusted using the informed ICP proposal.
+            - Ratio of accepted proposals when the model parameters have been adjusted using a random walk proposal.
             - Ratio of accepted proposals when the translation parameters have been adjusted.
             - Ratio of accepted proposals when the rotation parameters have been adjusted.
             - Total ratio of accepted proposals.
         :rtype: tuple
         """
-        accepted_tot = self.accepted_par + self.accepted_trans + self.accepted_rot
-        rejected_tot = self.rejected_par + self.rejected_trans + self.rejected_rot
+        accepted_tot = self.accepted_par + self.accepted_rnd + self.accepted_trans + self.accepted_rot
+        rejected_tot = self.rejected_par + self.rejected_rnd + self.rejected_trans + self.rejected_rot
         ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
+        ratio_rnd = float(self.accepted_rnd) / (self.accepted_rnd + self.rejected_rnd)
         ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
         ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
-        return ratio_par, ratio_trans, ratio_rot, ratio_tot
+        return ratio_par, ratio_rnd, ratio_trans, ratio_rot, ratio_tot
         # return ratio_par, None, None, ratio_tot
 
     def change_device(self, dev):

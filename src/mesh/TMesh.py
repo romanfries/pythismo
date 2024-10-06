@@ -7,7 +7,7 @@ from meshio import Mesh
 import trimesh.proximity
 from trimesh import Trimesh
 import pytorch3d
-from quad_mesh_simplify import simplify_mesh
+from simplify import simplify_mesh
 
 
 def get_transformation_matrix(angles: torch.Tensor, batched_input=False) -> torch.Tensor:

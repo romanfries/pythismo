@@ -114,22 +114,25 @@ class ExtendedPointFaceDistance(_PointFaceDistance):
 
 class ClosestPointProposal(GaussianRandomWalkProposal):
 
-    def __init__(self, batch_size, starting_parameters, dev, batched_reference, batched_target, model, sigma_mod,
-                 sigma_trans, sigma_rot, prob_mod, prob_trans, prob_rot, d=1.0, recalculation_period=100):
-        # TODO: Adjust docstring.
+    def __init__(self, batch_size, starting_parameters, dev, batched_shape, batched_target, model, var_mod_random,
+                 var_mod_informed, var_trans, var_rot, prob_mod_random, prob_mod_informed, prob_trans, prob_rot,
+                 d=1.0, recalculation_period=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
         for an entire batch of proposals.
         This is an informed proposal. The main idea comes from the paper by D. Madsen et al.: "A Closest Point Proposal
         for MCMC-based Probabilistic Surface Registration" and uses a posterior model based on estimated correspondences
-        to propose randomized informed samples.
-        However, a simplified version is implemented here. The posterior model is only recalculated every
-        'recalculation_period' steps and a batch element is randomly selected with which the posterior is calculated. It
-        is therefore not possible to use different starting parameters for different elements of the batch.
-        Furthermore, to keep the proposal distribution symmetrical, the posterior is centred on the current state.
-        A random walk is then performed in this posterior space and the guessed parameters are projected into the prior
-        parameter space.
+        to propose randomized informed samples. The entire class represents a mixture proposal. A tensor with possible
+        variances and associated probabilities can be specified for each type of parameter. It is also possible to
+        generate the new model parameters using an uninformed random walk proposal instead of the previously mentioned
+        ICP proposal based on the analytic posterior.
+        However, a simplified version of the ICP proposal is implemented here. The posterior model is only recalculated
+        every 'recalculation_period' steps and a batch element is randomly selected with which the posterior is
+        calculated. It is therefore not possible to use different starting parameters for different elements of the
+        batch. Furthermore, to keep the proposal distribution symmetrical, the posterior is centred on the current
+        state. A random walk is then performed in this posterior space until the posterior is recalculated and the
+        guessed parameters are projected into the prior parameter space.
         All types of parameters (posterior model and pose) are drawn independently of a Gaussian distribution with mean
         value at the previous parameter value and a standardised variance. The variance is defined separately for all 3
         types of parameters.
@@ -142,28 +145,31 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type starting_parameters: torch.Tensor
         :param dev: An object representing the device on which the tensor operations are or will be allocated.
         :type dev: torch.device
-        :param batched_reference: Current batch with mesh instances generated from the starting parameters. When the
+        :param batched_shape: Current batch with mesh instances generated from the starting parameters. When the
         analytic posterior is calculated, the distances to the target are determined. As the model parameters are the
         same for all elements of the batch, the mesh points must also be the same for every element of the batch.
-        :type batched_reference: BatchTorchMesh
+        :type batched_shape: BatchTorchMesh
         :param batched_target: Instance to be fitted. Necessary for calculating the analytic posterior. Remark: It is
         required that the target has the same ‘batch_size’ as ‘batch_reference’.
         :type batched_target: BatchTorchMesh
         :param model: Prior model, which serves as the starting point for calculating the posterior model.
         :type model: PointDistributionModel
-        :param sigma_mod: Variance of the posterior model parameters. The variances are given as a one-dimensional
-        tensor of float values.
-        :type sigma_mod: torch.Tensor
-        :param sigma_trans: Variance of the translation parameters. The variances are given as a one-dimensional tensor
-        of float values.
-        :type sigma_trans: torch.Tensor
-        :param sigma_rot: Variance of the rotation parameters. The variances are given as a one-dimensional tensor of
-        float values.
-        :type sigma_rot: torch.Tensor
-        :param prob_mod: One-dimensional tensor of floats with the same length as the variances for the model
-        parameters. The i-th value for the variance is selected with a probability equal to the i-th entry in this
+        :param var_mod_random: Variance of the prior model parameters. These variances are used when an uninformed
+        random walk proposal is to be made. All variances are given as a one-dimensional tensor of float values.
+        :type var_mod_random: torch.Tensor
+        :param var_mod_informed: Variance of the posterior model parameters. These variances are used for an ICP
+        proposal.
+        :type var_mod_informed: torch.Tensor
+        :param var_trans: Variance of the translation parameters.
+        :type var_trans: torch.Tensor
+        :param var_rot: Variance of the rotation parameters.
+        :type var_rot: torch.Tensor
+        :param prob_mod_random: One-dimensional tensor of floats with the same length as the variances for the prior
+        model parameters. The i-th value for the variance is selected with a probability equal to the i-th entry in this
         tensor.
-        :type prob_mod: torch.Tensor
+        :type prob_mod_random: torch.Tensor
+        :param prob_mod_informed: Same principle as for the prior model parameters.
+        :type prob_mod_informed: torch.Tensor
         :param prob_trans: Same principle as for the model parameters.
         :type prob_trans: torch.Tensor
         :param prob_rot: Same principle as for the model parameters.
@@ -176,19 +182,23 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         recalculated.
         :type recalculation_period: int
         """
-        super().__init__(batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, prob_mod, prob_trans,
-                         prob_rot)
+        super().__init__(batch_size, starting_parameters, dev, var_mod_random, var_trans, var_rot, prob_mod_random,
+                         prob_trans, prob_rot)
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.old_posterior_parameters = None
         self.single_shape = TorchMeshGpu(
-            meshio.Mesh(np.zeros((batched_reference.num_points, 3)), batched_reference.cells), 'single_shape', self.dev)
-        self.single_shape.set_points(batched_reference.tensor_points[:, :, 0].squeeze(), reset_com=True)
-        self.batched_shapes = batched_reference
+            meshio.Mesh(np.zeros((batched_shape.num_points, 3)), batched_shape.cells), 'single_shape', self.dev)
+        self.single_shape.set_points(batched_shape.tensor_points[:, :, 0].squeeze(), reset_com=True)
+        self.batched_shapes = batched_shape
         self.single_target = TorchMeshGpu(
             meshio.Mesh(np.zeros((batched_target.num_points, 3)), batched_target.cells), 'single_target', self.dev)
         self.single_target.set_points(batched_target.tensor_points[:, :, 0].squeeze(), reset_com=True)
         self.batched_targets = batched_target
         self.partial_target = self.batched_targets.num_points < self.batched_shapes.num_points
+
+        self.var_mod_icp = var_mod_informed
+        self.prob_mod_icp = prob_mod_informed
+
         self.prior_model = model
         self.prior_projection = torch.inverse(
             torch.t(self.prior_model.get_components()) @ self.prior_model.get_components()) @ torch.t(
@@ -338,7 +348,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         if self.chain_length % self.recalculation_period == 0:
             self.posterior_model, self.projection_matrix, self.mean_correction = self.calculate_posterior_model()
 
-        if parameter_proposal_type == ParameterProposalType.MODEL:
+        if parameter_proposal_type == ParameterProposalType.MODEL_RANDOM or parameter_proposal_type == \
+                ParameterProposalType.MODEL_INFORMED:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
             perturbations = torch.randn((3, self.batch_size), device=self.dev)
@@ -348,9 +359,12 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.old_translation = self.translation
         self.old_rotation = self.rotation
 
-        if parameter_proposal_type == ParameterProposalType.MODEL:
-            sigma_mod = self.sigma_mod[torch.multinomial(self.prob_mod, 1).item()].item()
-            self.posterior_parameters = self.posterior_parameters + perturbations * sigma_mod
+        if parameter_proposal_type == ParameterProposalType.MODEL_RANDOM:
+            var_mod = self.var_mod[torch.multinomial(self.prob_mod, 1).item()].item()
+            self.parameters = self.parameters + perturbations * var_mod
+        elif parameter_proposal_type == ParameterProposalType.MODEL_INFORMED:
+            var_mod = self.var_mod_icp[torch.multinomial(self.prob_mod_icp, 1).item()].item()
+            self.posterior_parameters = self.posterior_parameters + perturbations * var_mod
             self.parameters = self.parameters + self.d * (torch.matmul(self.projection_matrix,
                                                                        self.posterior_parameters) + self.mean_correction
                                                           - self.parameters)
@@ -363,12 +377,12 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             # rev_mean_correction))
             # self.ratio_trans_prob = rev_trans_prob / trans_prob
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            sigma_trans = self.sigma_trans[torch.multinomial(self.prob_trans, 1).item()].item()
-            self.translation = self.translation + perturbations * sigma_trans
+            var_trans = self.var_trans[torch.multinomial(self.prob_trans, 1).item()].item()
+            self.translation = self.translation + perturbations * var_trans
             # self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
         else:
-            sigma_rot = self.sigma_rot[torch.multinomial(self.prob_rot, 1).item()].item()
-            self.rotation = self.rotation + perturbations * sigma_rot
+            var_rot = self.var_rot[torch.multinomial(self.prob_rot, 1).item()].item()
+            self.rotation = self.rotation + perturbations * var_rot
             # self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
 
     def update(self, decider, posterior):
@@ -423,11 +437,13 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
                 self.mean_correction = self.mean_correction.to(dev)
             self.prior_projection = self.prior_projection.to(dev)
 
-            self.sigma_mod = self.sigma_mod.to(dev)
-            self.sigma_trans = self.sigma_trans.to(dev)
-            self.sigma_rot = self.sigma_rot.to(dev)
+            self.var_mod = self.var_mod.to(dev)
+            self.var_mod_icp = self.var_mod_icp.to(dev)
+            self.var_trans = self.var_trans.to(dev)
+            self.var_rot = self.var_rot.to(dev)
 
             self.prob_mod = self.prob_mod.to(dev)
+            self.prob_mod_icp = self.prob_mod_icp.to(dev)
             self.prob_trans = self.prob_trans.to(dev)
             self.prob_rot = self.prob_rot.to(dev)
 

@@ -5,14 +5,15 @@ import torch
 
 
 class ParameterProposalType(Enum):
-    MODEL = 0
-    TRANSLATION = 1
-    ROTATION = 2
+    MODEL_RANDOM = 0
+    MODEL_INFORMED = 1
+    TRANSLATION = 2
+    ROTATION = 3
 
 
 class GaussianRandomWalkProposal:
 
-    def __init__(self, batch_size, starting_parameters, dev, sigma_mod, sigma_trans, sigma_rot, prob_mod, prob_trans,
+    def __init__(self, batch_size, starting_parameters, dev, var_mod, var_trans, var_rot, prob_mod, prob_trans,
                  prob_rot):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
@@ -29,15 +30,15 @@ class GaussianRandomWalkProposal:
         :type starting_parameters: torch.Tensor
         :param dev: An object representing the device on which the tensor operations are or will be allocated.
         :type dev: torch.device
-        :param sigma_mod: Variance of the model parameters. The variances are given as a one-dimensional tensor of float
+        :param var_mod: Variance of the model parameters. The variances are given as a one-dimensional tensor of float
         values.
-        :type sigma_mod: torch.Tensor
-        :param sigma_trans: Variance of the translation parameters. The variances are given as a one-dimensional tensor
+        :type var_mod: torch.Tensor
+        :param var_trans: Variance of the translation parameters. The variances are given as a one-dimensional tensor
         of float values.
-        :type sigma_trans: torch.Tensor
-        :param sigma_rot: Variance of the rotation parameters. The variances are given as a one-dimensional tensor of
+        :type var_trans: torch.Tensor
+        :param var_rot: Variance of the rotation parameters. The variances are given as a one-dimensional tensor of
         float values.
-        :type sigma_rot: torch.Tensor
+        :type var_rot: torch.Tensor
         :param prob_mod: One-dimensional tensor of floats with the same length as the variances for the model
         parameters. The i-th value for the variance is selected with a probability equal to the i-th entry in this
         tensor.
@@ -54,9 +55,9 @@ class GaussianRandomWalkProposal:
         self.num_parameters = self.parameters.size()[0]
         self.translation = torch.zeros((3, self.batch_size), device=self.dev)
         self.rotation = torch.zeros((3, self.batch_size), device=self.dev)
-        self.sigma_mod = sigma_mod
-        self.sigma_trans = sigma_trans
-        self.sigma_rot = sigma_rot
+        self.var_mod = var_mod
+        self.var_trans = var_trans
+        self.var_rot = var_rot
         self.prob_mod = prob_mod
         self.prob_trans = prob_trans
         self.prob_rot = prob_rot
@@ -83,7 +84,8 @@ class GaussianRandomWalkProposal:
                           "be proposed.", UserWarning)
             return
 
-        if parameter_proposal_type == ParameterProposalType.MODEL:
+        if parameter_proposal_type == ParameterProposalType.MODEL_RANDOM or parameter_proposal_type == \
+                ParameterProposalType.MODEL_INFORMED:
             perturbations = torch.randn((self.num_parameters, self.batch_size), device=self.dev)
         else:
             perturbations = torch.randn((3, self.batch_size), device=self.dev)
@@ -92,14 +94,15 @@ class GaussianRandomWalkProposal:
         self.old_translation = self.translation
         self.old_rotation = self.rotation
 
-        if parameter_proposal_type == ParameterProposalType.MODEL:
-            sigma_mod = self.sigma_mod[torch.multinomial(self.prob_mod, 1).item()].item()
+        if parameter_proposal_type == ParameterProposalType.MODEL or parameter_proposal_type == \
+                ParameterProposalType.MODEL_INFORMED:
+            sigma_mod = self.var_mod[torch.multinomial(self.prob_mod, 1).item()].item()
             self.parameters = self.parameters + perturbations * sigma_mod
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            sigma_trans = self.sigma_trans[torch.multinomial(self.prob_trans, 1).item()].item()
+            sigma_trans = self.var_trans[torch.multinomial(self.prob_trans, 1).item()].item()
             self.translation = self.translation + perturbations * sigma_trans
         else:
-            sigma_rot = self.sigma_rot[torch.multinomial(self.prob_rot, 1).item()].item()
+            sigma_rot = self.var_rot[torch.multinomial(self.prob_rot, 1).item()].item()
             self.rotation = self.rotation + perturbations * sigma_rot
 
     def get_parameters(self):
@@ -173,9 +176,9 @@ class GaussianRandomWalkProposal:
                 self.chain = self.chain.to(dev)
                 self.posterior = self.posterior.to(dev)
 
-            self.sigma_mod = self.sigma_mod.to(dev)
-            self.sigma_trans = self.sigma_trans.to(dev)
-            self.sigma_rot = self.sigma_rot.to(dev)
+            self.var_mod = self.var_mod.to(dev)
+            self.var_trans = self.var_trans.to(dev)
+            self.var_rot = self.var_rot.to(dev)
 
             self.prob_mod = self.prob_mod.to(dev)
             self.prob_trans = self.prob_trans.to(dev)

@@ -169,12 +169,12 @@ class ChainAnalyser:
         chains/batch elements with shape (batch_size,).
         :rtype: tuple
         """
-        means, mins, maxs, vars = self.posterior[:, self.burn_in:].mean(dim=1), \
+        means, mins, maxs, vars_ = self.posterior[:, self.burn_in:].mean(dim=1), \
             torch.min(self.posterior[:, self.burn_in:], dim=1)[0], torch.max(self.posterior[:, self.burn_in:], dim=1)[
             0], self.posterior[:, self.burn_in:].var(dim=1)
-        return means, mins, maxs, vars
+        return means, mins, maxs, vars_
 
-    def data_to_json(self, loo, obs):
+    def data_to_json(self, loo, obs, additional_param):
         """
         Provides all values calculated in this class in .json format.
 
@@ -183,6 +183,8 @@ class ChainAnalyser:
         :type loo: int
         :param obs: Observed share of the mesh to reconstruct in per cent.
         :type obs: int
+        :param additional_param: Additional parameter to distinguish the generated outputs from each other.
+        :type additional_param: int
         :return: String containing the data in .json format.
         :rtype: str
         """
@@ -192,12 +194,13 @@ class ChainAnalyser:
         avg_var_post = self.avg_variance_per_point_post()
         avg_var_map = self.avg_variance_per_point_map()
         means, mins, maxs, vars = self.posterior_analytics()
-        acc_par, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio()
+        acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio()
         data = {
             'description': 'MCMC statistics',
             'identifiers': {
                 'reconstructed_shape': loo,
-                'percentage_observed': obs
+                'percentage_observed': obs,
+                'additional_param': additional_param
             },
             'effective_sample_sizes': {
                 'ess_per_param': ess.tolist()
@@ -218,6 +221,7 @@ class ChainAnalyser:
             },
             'acceptance': {
                 'model': acc_par,
+                'random_noise': acc_rnd,
                 'translation': acc_trans,
                 'rotation': acc_rot,
                 'total': acc_tot
@@ -227,3 +231,5 @@ class ChainAnalyser:
             }
         }
         return data
+
+
