@@ -240,7 +240,7 @@ class DataHandler:
             output_filename = f'posterior_samples_{loo}_{obs}_{additional_param}.html'
         else:
             output_filename = f'posterior_samples_{loo}_{obs}_{additional_param}.png'
-        output_file = self.plot_dir / output_filename
+        output_file = self.samples_dir / output_filename
 
         if save_html:
             fig.write_html(output_file)
@@ -356,7 +356,7 @@ class DataHandler:
             plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
                        r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             plt.tight_layout()
@@ -393,7 +393,7 @@ class DataHandler:
             plt.xlabel('Observed portion of the length of the femur [%]')
             plt.ylabel(r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             plt.tight_layout()
@@ -431,7 +431,7 @@ class DataHandler:
             plt.ylabel(
                 r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
@@ -470,7 +470,7 @@ class DataHandler:
             plt.ylabel(
                 r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
@@ -509,7 +509,7 @@ class DataHandler:
             plt.ylabel(
                 r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 100)
             plt.tight_layout()
@@ -547,7 +547,7 @@ class DataHandler:
             plt.ylabel(
                 r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 100)
@@ -570,7 +570,7 @@ class DataHandler:
             plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
                        r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "post_dist_corr_all.png"
@@ -590,7 +590,7 @@ class DataHandler:
             plt.xlabel('Observed portion of the length of the femur [%]')
             plt.ylabel(r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "post_dist_clp_all.png"
@@ -611,7 +611,7 @@ class DataHandler:
             plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
                        r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.ylim(0, 25)
             plt.tight_layout()
@@ -632,7 +632,7 @@ class DataHandler:
             plt.xlabel('Observed portion of the length of the femur [%]')
             plt.ylabel(r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.ylim(0, 25)
             plt.tight_layout()
@@ -653,7 +653,7 @@ class DataHandler:
             plt.xlabel('Observed portion of the length of the femur [%]')
             plt.ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 samples each)')
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.ylim(0, 80)
             plt.tight_layout()
             filename = "post_var_all.png"
@@ -673,7 +673,7 @@ class DataHandler:
             plt.xlabel('Observed portion of the length of the femur [%]')
             plt.ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample selected for'
+                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
             plt.ylim(0, 80)
             plt.tight_layout()
@@ -702,7 +702,7 @@ class DataHandler:
                 # Average distance to corresponding point across all samples
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_c_post_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
                           f'samples each) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
@@ -719,7 +719,7 @@ class DataHandler:
                 # Average distance to the closest point across all samples
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_n_post_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
                           f'samples each) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
@@ -734,7 +734,7 @@ class DataHandler:
                 # Average distance to the corresponding point across the MAP estimates of all MCMC chains
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_c_map_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
                           f'selected for each one) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
@@ -751,7 +751,7 @@ class DataHandler:
                 # Average distance to the closest point across the MAP estimates of all MCMC chains
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_n_map_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
                           f'selected for each one) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
@@ -767,6 +767,7 @@ class DataHandler:
                 fig, ax1 = plt.subplots(figsize=(20, 10))
                 mean_of_means_dist = df_group.groupby('additional_param')['mean_dist_c_post_all'].mean().reset_index()
                 ax1.scatter(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_post_all'], color='red', label='Distances (left)', s=100)
+                plt.plot(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_post_all'], color='red')
                 ax1.set_xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                                r'$[\mathrm{mm}^{2}]$')
                 ax1.set_ylabel(
@@ -774,13 +775,14 @@ class DataHandler:
                     r'given\ correspondences)\ [\mathrm{mm}]$', color='red')
                 ax1.set_ylim(0, 25)
 
-                ax2 = ax1.twins()
+                ax2 = ax1.twinx()
                 mean_of_means_var = df_group.groupby('additional_param')['avg_var_post_all'].mean().reset_index()
                 ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue',
                             label='Variances (right)', s=100)
+                plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue')
                 ax2.set_ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$', color='blue')
                 ax2.set_ylim(0, 80)
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains with 20000 '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
                           f'samples each) with an observed portion of {group} per cent')
                 fig.tight_layout()
                 filename = f'combined_post_dist_corr_var_{group}.png'
@@ -793,6 +795,7 @@ class DataHandler:
                 mean_of_means_dist = df_group.groupby('additional_param')['mean_dist_c_map_all'].mean().reset_index()
                 ax1.scatter(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_map_all'], color='red',
                             label='Distances (left)', s=100)
+                plt.plot(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_map_all'], color='red')
                 ax1.set_xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                                r'$[\mathrm{mm}^{2}]$')
                 ax1.set_ylabel(
@@ -800,13 +803,14 @@ class DataHandler:
                     r'given\ correspondences)\ [\mathrm{mm}]$', color='red')
                 ax1.set_ylim(0, 25)
 
-                ax2 = ax1.twins()
-                mean_of_means_var = df_group.groupby('additional_param')['avg_var_map_all'].mean().reset_index()
-                ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_map_all'], color='blue',
+                ax2 = ax1.twinx()
+                mean_of_means_var = df_group.groupby('additional_param')['avg_var_post_all'].mean().reset_index()
+                ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue',
                             label='Variances (right)', s=100)
+                plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue')
                 ax2.set_ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$', color='blue')
                 ax2.set_ylim(0, 80)
-                plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (20 chains, MAP sample '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
                           f'selected for each one) with an observed portion of {group} per cent')
                 fig.tight_layout()
                 filename = f'combined_map_dist_corr_var_{group}.png'
