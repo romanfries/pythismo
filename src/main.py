@@ -1,3 +1,4 @@
+import copy
 import math
 import os
 import sys
@@ -43,14 +44,14 @@ if RUN_ON_SCICORE_CLUSTER:
 else:
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-NUM_GPUS = 2
+NUM_GPUS = 4
 GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/toy-sigma"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/norm-laplacian-toy-3"
 
 # TODO: Analyser cannot calculate MAP variances for a batch size of 1, as there is only one single MAP estimate
 #  available.
@@ -75,7 +76,7 @@ UNIFORM_POSE_PRIOR = False
 VAR_PRIOR_TRANS = 30.0
 VAR_PRIOR_ROT = 0.01
 
-VAR_LIKELIHOOD_TERM = [0.05, 0.1, 4.0, 5.0]
+VAR_LIKELIHOOD_TERM = [0.2, 0.6, 1.0]
 GAMMA = 50.0
 
 ICP_D = 1.0
@@ -101,11 +102,12 @@ def trial():
     # Test procedure with subsequent visualisation
     meshes, _ = read_meshes(REL_PATH_MESH_DECIMATED, DEVICE)
     loo = torch.randint(0, len(meshes), (1,)).item()
+    loo = 0
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
     obs = 0.2
-    var_likelihood = 5.0
+    var_likelihood = 1.0
 
-    var_mod_random = VAR_MOD_RANDOM
+    var_mod_random = math.sqrt(var_likelihood) * VAR_MOD_RANDOM
     var_mod_informed = math.sqrt(var_likelihood) * VAR_MOD_INFORMED
     var_trans = math.sqrt(var_likelihood) * VAR_TRANS
     var_rot = math.sqrt(var_likelihood) * VAR_ROT
@@ -127,10 +129,10 @@ def trial():
     shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
     batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
 
-    proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape,
-                                    batched_target, model, var_mod_random, var_mod_informed, var_trans, var_rot,
-                                    PROB_MOD_RANDOM, PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT, ICP_D,
-                                    ICP_RECALCULATION_PERIOD)
+    proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape, batched_target, model,
+                                    var_mod_random, var_mod_informed, var_trans, var_rot, PROB_MOD_RANDOM,
+                                    PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT, var_n=var_likelihood, d=ICP_D,
+                                    recalculation_period=ICP_RECALCULATION_PERIOD)
 
     sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
                                    gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
@@ -201,16 +203,17 @@ def loocv():
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
             # for l_ in range(len(meshes)):
             for l_ in range(10):
-                target = meshes[l_]
-                del meshes[l_]
+                meshes_ = copy.deepcopy(meshes)
+                target = meshes_[l_]
+                del meshes_[l_]
                 z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
                     torch.max(target.tensor_points, dim=0)[1][2].item()
                 part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage)
-                meshes.insert(0, part_target)
-                ICPAnalyser(meshes).icp()
-                del meshes[0]
-                model = PointDistributionModel(meshes=meshes)
-                shape = meshes[0]
+                meshes_.insert(0, part_target)
+                ICPAnalyser(meshes_).icp()
+                del meshes_[0]
+                model = PointDistributionModel(meshes=meshes_)
+                shape = meshes_[0]
                 dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
                 observed = (dists < 1e-6).squeeze()
                 batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
@@ -218,10 +221,11 @@ def loocv():
                 shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
                 batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
 
-                proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape,
-                                                batched_target, model, var_mod_random, var_mod_informed, var_trans,
-                                                var_rot, PROB_MOD_RANDOM, PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT,
-                                                ICP_D, ICP_RECALCULATION_PERIOD)
+                proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape, batched_target,
+                                                model, var_mod_random, var_mod_informed, var_trans, var_rot,
+                                                PROB_MOD_RANDOM, PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT,
+                                                var_n=var_likelihood, d=ICP_D,
+                                                recalculation_period=ICP_RECALCULATION_PERIOD)
 
                 sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
                                                gamma=GAMMA, var_like=var_likelihood,
@@ -248,7 +252,7 @@ def loocv():
                 analyser = ChainAnalyser(sampler, proposal, model, observed, sampler.full_chain)
                 # analyser.detect_burn_in()
                 data = analyser.data_to_json(l_, int(100 * percentage), int(100 * var_likelihood))
-                meshes.insert(l_, target)
+                meshes_.insert(l_, target)
                 handler.write_statistics(data, l_, int(100 * percentage), int(100 * var_likelihood))
                 handler.save_posterior_samples(analyser.mesh_chain[:, :, :, analyser.burn_in:], batched_shape,
                                                part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood),
@@ -256,8 +260,8 @@ def loocv():
                 # Code to save further data
                 # chain_residual_dict = sampler.get_dict_chain_and_residuals()
                 # handler.write_chain_and_residuals(chain_residual_dict, l, int(100 * percentage))
-                param_chain_posterior_dict = proposal.get_dict_param_chain_posterior()
-                handler.write_param_chain_posterior(param_chain_posterior_dict, l_, int(100 * percentage))
+                # param_chain_posterior_dict = proposal.get_dict_param_chain_posterior()
+                # handler.write_param_chain_posterior(param_chain_posterior_dict, l_, int(100 * percentage))
 
 
 def mcmc_task(gpu_id_, chunk_):
@@ -278,22 +282,23 @@ def mcmc_task(gpu_id_, chunk_):
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
     meshes, _ = read_meshes(REL_PATH_MESH_DECIMATED, device_)
     for var_likelihood, percentage in chunk_:
-        var_mod_random = math.sqrt(var_likelihood) * var_mod_random
-        var_mod_informed = math.sqrt(var_likelihood) * var_mod_informed
-        var_trans = math.sqrt(var_likelihood) * var_trans
-        var_rot = math.sqrt(var_likelihood) * var_rot
-        # for l_ in range(len(meshes)):
+        var_m_rd = math.sqrt(var_likelihood) * var_mod_random
+        var_m_in = math.sqrt(var_likelihood) * var_mod_informed
+        var_t = math.sqrt(var_likelihood) * var_trans
+        var_r = math.sqrt(var_likelihood) * var_rot
         for l_ in range(10):
-            target = meshes[l_]
-            del meshes[l_]
+            # for l_ in range(41, 47):
+            meshes_ = copy.deepcopy(meshes)
+            target = meshes_[l_]
+            del meshes_[l_]
             z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
                 torch.max(target.tensor_points, dim=0)[1][2].item()
             part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage)
-            meshes.insert(0, part_target)
-            ICPAnalyser(meshes).icp()
-            del meshes[0]
-            model = PointDistributionModel(meshes=meshes)
-            shape = meshes[0]
+            meshes_.insert(0, part_target)
+            ICPAnalyser(meshes_).icp()
+            del meshes_[0]
+            model = PointDistributionModel(meshes=meshes_)
+            shape = meshes_[0]
             dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
             observed = (dists < 1e-6).squeeze()
             batched_target = BatchTorchMesh(part_target, 'target', device_, BATCH_SIZE)
@@ -301,10 +306,10 @@ def mcmc_task(gpu_id_, chunk_):
             shape.set_points(model.get_points_from_parameters(starting_params), reset_com=True)
             batched_shape = BatchTorchMesh(shape, 'current_shapes', device_, BATCH_SIZE)
 
-            proposal = ClosestPointProposal(BATCH_SIZE, starting_params, device_, batched_shape,
-                                            batched_target, model, var_mod_random, var_mod_informed, var_trans,
-                                            var_rot, prob_mod_random, prob_mod_informed, prob_trans, prob_rot,
-                                            ICP_D, ICP_RECALCULATION_PERIOD)
+            proposal = ClosestPointProposal(BATCH_SIZE, starting_params, device_, batched_shape, batched_target, model,
+                                            var_m_rd, var_m_in, var_t, var_r, prob_mod_random, prob_mod_informed,
+                                            prob_trans, prob_rot, var_n=var_likelihood, d=ICP_D,
+                                            recalculation_period=ICP_RECALCULATION_PERIOD)
 
             sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
                                            gamma=GAMMA, var_like=var_likelihood,
@@ -331,7 +336,7 @@ def mcmc_task(gpu_id_, chunk_):
             analyser = ChainAnalyser(sampler, proposal, model, observed, sampler.full_chain)
             # analyser.detect_burn_in()
             data = analyser.data_to_json(l_, int(100 * percentage), int(100 * var_likelihood))
-            meshes.insert(l_, target)
+            meshes_.insert(l_, target)
             handler.write_statistics(data, l_, int(100 * percentage), int(100 * var_likelihood))
             handler.save_posterior_samples(analyser.mesh_chain[:, :, :, analyser.burn_in:], batched_shape,
                                            part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood))

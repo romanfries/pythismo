@@ -116,7 +116,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
 
     def __init__(self, batch_size, starting_parameters, dev, batched_shape, batched_target, model, var_mod_random,
                  var_mod_informed, var_trans, var_rot, prob_mod_random, prob_mod_informed, prob_trans, prob_rot,
-                 d=1.0, recalculation_period=1000):
+                 var_n=3.0, var_v=100.0, d=1.0, recalculation_period=1000):
         """
         The class is used to draw new values for the parameters. The class supports three types of parameter: Model
         parameters, translation and rotation. It is designed for batches. All parameters are therefore always generated
@@ -174,6 +174,10 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         :type prob_trans: torch.Tensor
         :param prob_rot: Same principle as for the model parameters.
         :type prob_rot: torch.Tensor
+        :param var_n: Variance along the normal direction.
+        :type var_n: float
+        :param var_v: Variance along the surface.
+        :type var_v: float
         :param d: Step length between in [0.0, ..., 1.0] that determines how the prior parameters are updated. With a
         step size of 1.0, the proposed sample is an independent sample from the calculated posterior. With a small step
         size, the current proposal is only adjusted slightly in the direction of the target surface.
@@ -208,6 +212,9 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.rint = torch.randint(0, self.batch_size, (1,)).item()
         self.recalculation_period = recalculation_period
 
+        self.sigma_n = var_n
+        self.sigma_v = var_v
+
     def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
         """
         Executes the calculation of the posterior model.
@@ -216,10 +223,6 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         The noise of the observations is modeled with low variance along the normal direction and high variance along
         the surface. For this reason, the corresponding vertex normals must be calculated along the way.
 
-        :param sigma_n: Variance along the normal direction.
-        :type sigma_n: float
-        :param sigma_v: Variance along the surface.
-        :type sigma_v: float
         :return: Tuple with 3 elements:
             - PointDistributionModel: Calculated posterior point distribution model (PDM).
             - torch.Tensor: Projection matrix with which proposed posterior model parameters can be projected into the
@@ -299,7 +302,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         v2 = v2 / torch.norm(v2, dim=1, keepdim=True)
 
         directions = torch.stack((face_normals[triangle_idx], v1[triangle_idx], v2[triangle_idx]), dim=2)
-        sigma = torch.diag(torch.tensor([sigma_n, sigma_v, sigma_v], device=self.dev))
+        sigma = torch.diag(torch.tensor([self.sigma_n, self.sigma_v, self.sigma_v], device=self.dev))
         covariances = directions @ sigma @ directions.transpose(1, 2)
 
         # 4: Compute the analytic posterior \mathcal{M}_{\alpha} (eq. 10) with L and {\Sigma_{s_{i}}}.

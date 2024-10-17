@@ -264,6 +264,9 @@ class DataHandler:
         if data_dict is None:
             data_dict = self.read_all_statistics()
 
+        # Remove femurs whose Markov chains often do not converge
+        # mask = ~torch.isin(data_dict['identifiers']['reconstructed_shape'], torch.tensor([22, 32, 41, 44]))
+        # mask = ~torch.gt(torch.var(data_dict['unnormalised_log_density_posterior']['mean'], dim=1), 1.0)
         # Prepare the data
         mean_dist_c_post = data_dict['accuracy']['mean_dist_corr_post']
         mean_dist_n_post = data_dict['accuracy']['mean_dist_clp_post']
@@ -280,6 +283,8 @@ class DataHandler:
         mean_dist_c_post_all = mean_dist_c_post.mean(dim=1).numpy()
         mean_dist_n_post_all = mean_dist_n_post.mean(dim=1).numpy()
         mean_dist_c_map_all = mean_dist_c_map.mean(dim=1).numpy()
+        # mean_dist_c_map[observed] = float('nan')
+        # mean_dist_c_map_all = mean_dist_c_map.nanmean(dim=1).numpy()
         mean_dist_n_map_all = mean_dist_n_map.mean(dim=1).numpy()
         avg_var_post_all = avg_var_post.mean(dim=1).numpy()
         avg_var_map_all = avg_var_map.mean(dim=1).numpy()
@@ -759,33 +764,6 @@ class DataHandler:
                 plt.ylim(0, 25)
                 plt.tight_layout()
                 filename = f'map_dist_clp_{group}.png'
-                png_plot_file = self.plot_dir / filename
-                plt.savefig(png_plot_file)
-                plt.close()
-
-                # Distances to corresponding points / variances across all samples combined
-                fig, ax1 = plt.subplots(figsize=(20, 10))
-                mean_of_means_dist = df_group.groupby('additional_param')['mean_dist_c_post_all'].mean().reset_index()
-                ax1.scatter(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_post_all'], color='red', label='Distances (left)', s=100)
-                plt.plot(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_post_all'], color='red')
-                ax1.set_xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
-                               r'$[\mathrm{mm}^{2}]$')
-                ax1.set_ylabel(
-                    r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
-                    r'given\ correspondences)\ [\mathrm{mm}]$', color='red')
-                ax1.set_ylim(0, 25)
-
-                ax2 = ax1.twinx()
-                mean_of_means_var = df_group.groupby('additional_param')['avg_var_post_all'].mean().reset_index()
-                ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue',
-                            label='Variances (right)', s=100)
-                plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue')
-                ax2.set_ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$', color='blue')
-                ax2.set_ylim(0, 80)
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
-                          f'samples each) with an observed portion of {group} per cent')
-                fig.tight_layout()
-                filename = f'combined_post_dist_corr_var_{group}.png'
                 png_plot_file = self.plot_dir / filename
                 plt.savefig(png_plot_file)
                 plt.close()

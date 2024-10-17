@@ -2,6 +2,8 @@ import math
 import warnings
 
 import torch
+
+import pytorch3d.ops
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 
 from src.sampling.proposals import ParameterProposalType
@@ -49,6 +51,56 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     """
     distances_squared = torch.pow(distances, 2)
     log_likelihoods = 0.5 * gamma * (torch.mean(-distances_squared, dim=0) / sigma_lm)
+    log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
+    rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
+    if uniform_pose_prior:
+        log_translation = torch.zeros_like(log_likelihoods)
+        log_rotation = torch.zeros_like(log_likelihoods)
+    else:
+        log_translation = 0.5 * torch.sum(-torch.pow(translation / sigma_trans, 2), dim=0)
+        log_rotation = 0.5 * torch.sum(-torch.pow(rotation / sigma_rot, 2), dim=0)
+    return log_likelihoods + log_prior + log_translation + log_rotation
+
+
+def unnormalised_log_posterior_curvature(distances, parameters, translation, rotation, gamma, sigma_lm, sigma_mod,
+                                         rel_curvs, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
+    """
+    Same method as above, but the individual independent point contributions are weighted with the local curvature when 
+    calculating the likelihood term.
+    
+    :param distances: Tensor with distances from each point of the target to the closest point on the surface of the
+    current shapes considered with shape (num_target_points, batch_size).
+    :type distances: torch.Tensor
+    :param parameters: Tensor with the current model parameters of the current shapes considered with shape
+    (num_parameters, batch_size).
+    :type parameters: torch.Tensor
+    :param translation: Tensor with the current translation parameters of the current shapes considered with shape
+    (3, batch_size).
+    :type translation: torch.Tensor
+    :param rotation: Tensor with the current rotation parameters of the current shapes considered with shape
+    (3, batch_size).
+    :type rotation: torch.Tensor
+    :param gamma: Multiplication factor of the likelihood term.
+    :type gamma: float
+    :param sigma_lm: Variance of the zero-mean Gaussian, which is used to evaluate the L2 distances. The same variance
+    value is used for all 3 dimensions (isotropic distribution).
+    :type sigma_lm: float
+    :param sigma_mod: Variance of the model parameters (prior term calculation).
+    :type sigma_mod: float
+    :param rel_curvs: Measure for the relative curvature at each point with shape (num_target_points, batch_size).
+    :type rel_curvs: torch.Tensor
+    :param uniform_pose_prior: If True, an uninformed prior distribution is used for the pose parameters. If False, then
+    a zero-mean Gaussian distribution with variances var_trans, var_rot is assumed.
+    :type uniform_pose_prior: bool
+    :param sigma_trans: Variance of the translation parameters (prior term calculation).
+    :type sigma_trans: float
+    :param sigma_rot: Variance of the rotation parameters (prior term calculation).
+    :type sigma_rot: float
+    :return: Tensor with the unnormalised log posterior values of the analysed shapes with shape (batch_size,).
+    :rtype: torch.Tensor
+    """
+    distances_squared = torch.pow(distances, 2)
+    log_likelihoods = 0.5 * gamma * (torch.sum(torch.mul((-distances_squared / sigma_lm), rel_curvs), dim=0))
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -123,6 +175,14 @@ class PDMMetropolisSampler:
         self.var_prior_rot = var_prior_rot
         if self.uniform_pose_prior:
             self.var_prior_trans, self.var_prior_rot = 0.0, 0.0
+        # TODO: Introduce input variables to control curvature-dependent weighting from the main script.
+        # Mean curvature is the average of the 2 principal curvatures.
+        # curvatures, directions = pytorch3d.ops.estimate_pointcloud_local_coord_frames(
+        #    self.target_points.permute(2, 0, 1))
+        # mean_curv = curvatures[:, :, 1:3].mean(dim=2) / curvatures[:, :, 1:3].mean(dim=2).sum(dim=1, keepdim=True)
+        # Use the reciprocals of the relative curvatures as weights
+        # self.mean_curv = (1 / (mean_curv.permute(1, 0) + 1e-8)) / (1 / (mean_curv.permute(1, 0) + 1e-8)).sum(dim=0, keepdim=True)
+        # self.mean_curv = mean_curv.permute(1, 0)
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL_RANDOM)
         self.old_posterior = self.posterior
@@ -194,9 +254,15 @@ class PDMMetropolisSampler:
                                                    self.proposal.rotation, self.gamma, self.var_like,
                                                    self.var_prior_mod, self.uniform_pose_prior, self.var_prior_trans,
                                                    self.var_prior_rot)
+            # posterior = unnormalised_log_posterior_curvature(distances, self.proposal.parameters,
+            #                                                  self.proposal.translation, self.proposal.rotation,
+            #                                                  self.gamma, self.var_like, self.var_prior_mod,
+            #                                                  self.mean_curv, self.uniform_pose_prior,
+            #                                                  self.var_prior_trans, self.var_prior_rot)
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
+            target_meshes = self.target.to_pytorch3d_meshes()
             target_clouds = self.target.to_pytorch3d_pointclouds()
             # packed representation for faces
             verts_packed = reference_meshes.verts_packed()
@@ -216,11 +282,27 @@ class PDMMetropolisSampler:
                 (-1, int(self.target.num_points)))
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
+            # PyTorch3D function leaves all diagonal elements at 0.
+            edges = target_meshes.edges_packed()[target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
+            # graph_laplacian = -pytorch3d.ops.cot_laplacian(self.target_points[:, :, 0], self.target.cells[0].data)[0].to_dense()
+            graph_laplacian = -pytorch3d.ops.norm_laplacian(self.target_points[:, :, 0], edges).to_dense()
+            sums = -graph_laplacian.sum(dim=1)
+            D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
+            graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
+            graph_laplacian = D @ graph_laplacian @ D
+            identity = torch.diag(torch.ones(graph_laplacian.size(0), device=self.dev))
+            regularizer = 1.0 * identity + 3.0 * graph_laplacian
+            residual = regularizer @ torch.sqrt(point_to_face)
             # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.proposal.parameters,
-                                                   self.proposal.translation, self.proposal.rotation, self.gamma,
-                                                   self.var_like, self.var_prior_mod, self.uniform_pose_prior,
-                                                   self.var_prior_trans, self.var_prior_rot)
+            posterior = unnormalised_log_posterior(residual, self.proposal.parameters, self.proposal.translation,
+                                                   self.proposal.rotation, self.gamma, 3.0 * self.var_like,
+                                                   self.var_prior_mod, self.uniform_pose_prior, self.var_prior_trans,
+                                                   self.var_prior_rot)
+            # posterior = unnormalised_log_posterior_curvature(torch.sqrt(point_to_face), self.proposal.parameters,
+            #                                                  self.proposal.translation, self.proposal.rotation,
+            #                                                  self.gamma, self.var_like, self.var_prior_mod,
+            #                                                  self.mean_curv, self.uniform_pose_prior,
+            #                                                  self.var_prior_trans, self.var_prior_rot)
 
         self.posterior = posterior
 
