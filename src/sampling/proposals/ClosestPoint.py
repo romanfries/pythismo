@@ -186,8 +186,9 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         recalculated.
         :type recalculation_period: int
         """
-        super().__init__(batch_size, starting_parameters, dev, var_mod_random, var_trans, var_rot, prob_mod_random,
+        super().__init__(batch_size, starting_parameters[:, 0], dev, var_mod_random, var_trans, var_rot, prob_mod_random,
                          prob_trans, prob_rot)
+        self.parameters = starting_parameters
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.old_posterior_parameters = None
         self.single_shape = TorchMeshGpu(
@@ -215,7 +216,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.sigma_n = var_n
         self.sigma_v = var_v
 
-    def calculate_posterior_model(self, sigma_n=3.0, sigma_v=100.0):
+    def calculate_posterior_model(self):
         """
         Executes the calculation of the posterior model.
         In contrast to the algorithm in the paper by D. Madsen et al., all points on the selected current model instance

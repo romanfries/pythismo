@@ -314,7 +314,8 @@ class TorchMeshGpu(Mesh):
 
             self.dev = dev
 
-    def partial_shape(self, idx1, idx2, ratio_observed, plane_given=False, plane_normal=None, plane_origin=None):
+    def partial_shape(self, idx1, idx2, ratio_observed, inversion=False, plane_given=False, plane_normal=None,
+                      plane_origin=None):
         """
         Takes the two indices of the points that define the length of the mesh and the length proportion of the desired
         observed part and determines the corresponding partial mesh.
@@ -326,6 +327,9 @@ class TorchMeshGpu(Mesh):
         :type idx2: int
         :param ratio_observed: Proportion of the desired observed part.
         :type ratio_observed: float
+        :param inversion: Allows you to choose whether the proximal or distal part of the femur is observed. If False,
+        the proximal end is observed; if True, the distal end is observed.
+        :type inversion: bool
         :param plane_given:
         :type plane_given: bool
         :param plane_normal:
@@ -335,11 +339,15 @@ class TorchMeshGpu(Mesh):
         :return: Partial shape as a TorchMeshGpu instance.
         :rtype: TorchMeshGpu
         """
-        if not plane_given:
+        if not plane_given and not inversion:
             plane_normal = (self.tensor_points[idx1, :] - self.tensor_points[idx2, :])
             plane_origin = (self.tensor_points[idx2, :] + (1.0 - ratio_observed) * plane_normal)
+        elif not plane_given and inversion:
+            plane_normal = (self.tensor_points[idx2, :] - self.tensor_points[idx1, :])
+            plane_origin = (self.tensor_points[idx1, :] + (1.0 - ratio_observed) * plane_normal)
         mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin.cpu(),
                                                                                            plane_normal.cpu())
+
         return TorchMeshGpu(
             meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
             'partial_shape', self.dev), plane_normal, plane_origin

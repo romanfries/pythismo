@@ -1,5 +1,6 @@
 import arviz as az
 import numpy as np
+import plotly.graph_objects as go
 
 import torch
 
@@ -20,9 +21,11 @@ def acf(chain, max_lag=100, b_int=100, b_max=2000):
 
 
 class ChainAnalyser:
+    # TODO: Consider the MAP Estimate across all chains and not the MAP Estimate of each chain.
     def __init__(self, sampler, proposal, model, observed, mesh_chain=None, initial_com=None, auto_detect_burn_in=False,
                  default_burn_in=2000):
         # TODO: Write docstring.
+        # TODO: Introduce a device variable.
         self.sampler = sampler
         self.proposal = proposal
         self.param_chain = proposal.chain  # (num_params, batch_size, chain_length)
@@ -57,7 +60,7 @@ class ChainAnalyser:
         else:
             self.burn_in = default_burn_in
 
-    def detect_burn_in(self, ix=46, b_int=100, b_max=2000):
+    def detect_burn_in(self, ix=45, b_int=100, b_max=5000):
         """
         The method calculates an approximation of the ESS (Effective Sample Size) for the chains with different burn-in
         periods and uses this data to automatically detect the burn-in period. The corresponding function from the ArviZ
@@ -85,15 +88,33 @@ class ChainAnalyser:
             ess_values[:, idx] = az.ess(az.convert_to_inference_data(chain_cpu[:, burn_in:, :])).x.data
         return starts[np.max(np.argmax(ess_values, axis=1))]
 
-    def ess(self, ix=52):
+    def rhat(self, ix=45):
         """
-        The method calculates an approximation of the ESS (Effective Sample Size) for every parameter. The corresponding
-        function from the ArviZ library is used to determine the ESS values. As ArviZ does not offer GPU support, the
-        calculation may be slow. The current ArviZ implementation is similar to Stan, which uses Geyer’s initial
-        monotone sequence criterion (Geyer, 1992; Geyer, 2011).
+        The method calculates the rank normalized R-hat diagnostic for the first 'ix' parameters. The rank normalized
+        R-hat diagnostic tests for lack of convergence by comparing the variance between multiple chains to the variance
+        within each chain. If convergence has been achieved, the between-chain and within-chain variances should be
+        identical.
 
         :param ix: Specifies how many of the first main components of the model are included in the calculation.
         :type ix: int
+        :return: Tensor of size (ix,) containing the R-hat values for the first 'ix' parameters of the current chains.
+        :rtype: torch.Tensor
+        """
+        chain_cpu = self.param_chain[:ix, :, self.burn_in:].permute(1, 2, 0).cpu().numpy()
+        return torch.tensor(az.rhat(az.convert_to_inference_data(chain_cpu)).x.values.astype(np.float32),
+                            device=self.param_chain.device)
+
+    def ess(self, ix=45):
+        """
+        The method calculates an approximation of the ESS (Effective Sample Size) for the first 'ix' parameters. The
+        corresponding function from the ArviZ library is used to determine the ESS values. As ArviZ does not offer GPU
+        support, the calculation may be slow. The current ArviZ implementation is similar to Stan, which uses Geyer’s
+        initial monotone sequence criterion (Geyer, 1992; Geyer, 2011).
+
+        :param ix: Specifies how many of the first main components of the model are included in the calculation.
+        :type ix: int
+        :return: Tensor of size (ix,) containing the ESS values for the first 'ix' parameters of the current chains.
+        :rtype: torch.Tensor
         """
         chain_cpu = self.param_chain[:ix, :, self.burn_in:].permute(1, 2, 0).cpu().numpy()
         return torch.tensor(az.ess(az.convert_to_inference_data(chain_cpu)).x.data.astype(np.float32),
@@ -101,24 +122,28 @@ class ChainAnalyser:
 
     def mean_dist_to_target_post(self):
         """
-        Calculates the average distance of each point of the target to the sampled instances across all chains and
-        samples.
+        Calculates the average distance of each point of the target to the instances sampled from the posterior
+        distribution across all samples of the independent parallel chains.
 
-        :return: Tuple with two elements:
+        :return: Tuple with four elements:
         - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
-        reconstructed mesh instances by utilising the known correspondences with shape (num_points,).
+        reconstructed mesh instances by utilising the known correspondences with shape (num_points, batch_size).
         - torch.Tensor: Tensor containing the average distances to the closest point on the reconstructed mesh
-        instances with shape (num_points,).
+        instances with shape (num_points, batch_size).
+        - torch.Tensor: Tensor containing the average squared distances from the target points to the corresponding
+        point on the reconstructed mesh instances by utilising the known correspondences with shape
+        (num_points, batch_size).
+        - torch.Tensor: Tensor containing the average squared distances to the closest point on the reconstructed mesh
+        instances with shape (num_points, batch_size).
         :rtype: tuple
         """
-        residuals_c_view = self.residuals_c[:, :, self.burn_in:].reshape(self.num_points, -1)
-        residuals_n_view = self.residuals_n[:, :, self.burn_in:].reshape(self.num_points, -1)
-        return residuals_c_view.mean(dim=1), residuals_n_view.mean(dim=1)
+        residuals_c_squared, residuals_n_squared = torch.pow(self.residuals_c[:, :, self.burn_in:], 2), torch.pow(self.residuals_n[:, :, self.burn_in:], 2)
+        return self.residuals_c[:, :, self.burn_in:].mean(dim=2), self.residuals_n[:, :, self.burn_in:].mean(dim=2), residuals_c_squared.mean(dim=2), residuals_n_squared.mean(dim=2)
 
     def mean_dist_to_target_map(self):
         """
-        Calculates the average distance of each point of the target to the maximum a posteriori (MAP) estimate across
-        all chains.
+        Returns the average distance of each point of the target to the maximum a posteriori (MAP) estimate across
+        all samples and independent parallel chains.
 
         :return: Tuple with two elements:
         - torch.Tensor: Tensor containing the average distances from the target points to the corresponding point on the
@@ -127,31 +152,18 @@ class ChainAnalyser:
         instance with shape (num_points,).
         :rtype: tuple
         """
-        map_indices = torch.max(self.posterior[:, self.burn_in:], dim=1)[1]
-        return self.residuals_c[:, :, self.burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1), \
-            self.residuals_n[:, :, self.burn_in:][:, torch.arange(self.batch_size), map_indices].mean(dim=1)
+        map_indices = (torch.div(torch.argmax(self.posterior[:, self.burn_in:]), (self.chain_length - self.burn_in), rounding_mode="trunc")).item(), (torch.argmax(self.posterior[:, self.burn_in:]) % (self.chain_length - self.burn_in)).item()
+        return self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], torch.pow(self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2), torch.pow(self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2)
 
-    def avg_variance_per_point_post(self):
+    def avg_variance_per_point(self):
         """
-        Calculates the variance of all the points in the reconstructed mesh instances across all chains and samples.
+        Calculates the variance of all the points in the reconstructed mesh instances across all samples of the
+        independent parallel chains.
 
-        :return: Tensor containing the variances mentioned above.
+        :return: Tensor containing the variances mentioned above with shape (num_points, batch_size).
         :rtype: torch.Tensor
         """
-        mesh_chain_view = self.mesh_chain[:, :, :, self.burn_in:].reshape(self.num_points, 3, -1)
-        return mesh_chain_view.var(dim=2).mean(dim=1)
-
-    def avg_variance_per_point_map(self):
-        """
-        Calculates the variance of all the points of the maximum a posteriori (MAP) estimates across all chains.
-
-        :return: Tensor containing the variances mentioned above.
-        :rtype: torch.Tensor
-        """
-        map_indices = torch.max(self.posterior[:, self.burn_in:], dim=1)[1]
-        return self.mesh_chain[:, :, :, self.burn_in:][:, :, torch.arange(self.batch_size), map_indices].var(
-            dim=2).mean(
-            dim=1)
+        return self.mesh_chain[:, :, :, self.burn_in:].var(dim=3).mean(dim=1)
 
     def posterior_analytics(self):
         """
@@ -174,10 +186,34 @@ class ChainAnalyser:
             0], self.posterior[:, self.burn_in:].var(dim=1)
         return means, mins, maxs, vars_
 
-    def data_to_json(self, loo, obs, additional_param):
+    def simple_convergence_check(self, threshold_val=1.1):
+        """
+        Performs a simple convergence check by removing chains whose average value of the log density posterior deviates
+        too much. It does not guarantee that the chains that pass the check have converged. But there is a high
+        probability that the removed chains have not converged. I have not found any scientific justification for this,
+        but empirically, it fulfils its purpose.
+
+        :param threshold_val: Determines how strictly chains are removed.
+        :type threshold_val: float
+        :return: Boolean tensor of shape (batch_size,) that indicates which chains did not pass the convergence check.
+        :rtype: torch.Tensor
+        """
+        means, _, maxs, _ = self.posterior_analytics()
+        not_converged = (means < threshold_val * torch.max(means))
+        self.mesh_chain = self.mesh_chain[:, :, ~not_converged, :]
+        self.param_chain = self.param_chain[:, ~not_converged, :]
+        self.posterior = self.posterior[~not_converged, :]
+        self.residuals_c = self.residuals_c[:, ~not_converged, :]
+        self.residuals_n = self.residuals_n[:, ~not_converged, :]
+        return not_converged
+
+    def data_to_json(self, ix, loo, obs, additional_param):
         """
         Provides all values calculated in this class in .json format.
 
+        :param ix: Specifies for how many of the (model) parameters the MCMC diagnostics ESS and Rhat are to be
+        determined.
+        :type ix: int
         :param loo: Indicator of which mesh instance was reconstructed and accordingly omitted from the calculation of
         the corresponding PDM during the run.
         :type loo: int
@@ -188,30 +224,36 @@ class ChainAnalyser:
         :return: String containing the data in .json format.
         :rtype: str
         """
-        ess = self.ess()
-        mean_dist_c_post, mean_dist_n_post = self.mean_dist_to_target_post()
-        mean_dist_c_map, mean_dist_n_map = self.mean_dist_to_target_map()
-        avg_var_post = self.avg_variance_per_point_post()
-        avg_var_map = self.avg_variance_per_point_map()
+        not_converged = self.simple_convergence_check()
         means, mins, maxs, vars = self.posterior_analytics()
-        acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio()
+        rhat = self.rhat(ix=ix)
+        ess = self.ess(ix=ix)
+        mean_dist_c_post, mean_dist_n_post, squared_c_post, squared_n_post = self.mean_dist_to_target_post()
+        mean_dist_c_map, mean_dist_n_map, squared_c_map, squared_n_map = self.mean_dist_to_target_map()
+        avg_var = self.avg_variance_per_point()
+        acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio(~not_converged)
         data = {
             'description': 'MCMC statistics',
             'identifiers': {
                 'reconstructed_shape': loo,
                 'percentage_observed': obs,
-                'additional_param': additional_param
+                'additional_param': additional_param,
+                'chains_considered': torch.sum(~not_converged).item()
             },
             'effective_sample_sizes': {
-                'ess_per_param': ess.tolist()
+                'ess_per_param': ess.tolist(),
+                'rhat_per_param': rhat.tolist()
             },
             'accuracy': {
                 'mean_dist_corr_post': mean_dist_c_post.tolist(),
                 'mean_dist_clp_post': mean_dist_n_post.tolist(),
+                'squared_corr_post': squared_c_post.tolist(),
+                'squared_clp_post': squared_n_post.tolist(),
                 'mean_dist_corr_map': mean_dist_c_map.tolist(),
                 'mean_dist_clp_map': mean_dist_n_map.tolist(),
-                'var_post': avg_var_post.tolist(),
-                'var_map': avg_var_map.tolist()
+                'squared_corr_map': squared_c_map.tolist(),
+                'squared_clp_map': squared_n_map.tolist(),
+                'var': avg_var.tolist()
             },
             'unnormalised_log_density_posterior': {
                 'mean': means.tolist(),
@@ -230,6 +272,46 @@ class ChainAnalyser:
                 'boolean': self.observed.tolist()
             }
         }
+
         return data
+
+    def get_traceplots(self, loo, obs, additional_param):
+        figures = []
+        posterior_cpu = self.posterior.cpu().numpy()
+        y_min, y_max = np.min(posterior_cpu[:, self.burn_in:]), np.max(posterior_cpu[:, self.burn_in:])
+        for i in range(self.posterior.size(0)):
+            x, y = np.arange(self.burn_in, self.chain_length, 1), posterior_cpu[i, self.burn_in:self.chain_length]
+            figure = {
+                'data': [go.Scatter(x=x, y=y, mode='lines+markers', marker=dict(size=5))],
+                'layout': go.Layout(
+                    title=f'Trace Plot for Chain {i}',
+                    xaxis={'title': 'Iteration'},
+                    yaxis={'title': 'Log Density Values', 'range': [y_min, y_max]},
+                    annotations=[
+                        dict(
+                            xref='paper',
+                            yref='paper',
+                            x=1,
+                            y=1.01,  # Position auf der y-Achse (0.95 ist nahe der oberen Kante)
+                            showarrow=False,  # Keine Pfeile, nur Text
+                            text=f"Reconstructed Shape: {loo}<br>"
+                                 f"Observed Length Proportion: {obs}<br>"
+                                 f"Variance for Indep. Point Likelihood Evaluator: {additional_param}",
+                            align='left',
+                            yanchor='bottom',
+                            bordercolor='black',
+                            borderwidth=1,
+                            borderpad=4,
+                            bgcolor='lightgrey',
+                            font=dict(size=10)
+                        )
+                    ]
+                )
+            }
+            figures.append(figure)
+        return figures
+
+
+
 
 

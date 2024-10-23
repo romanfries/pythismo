@@ -239,9 +239,9 @@ class ChainVisualizer:
                         min=0,
                         max=self.sampler.proposal.chain_length,
                         step=1000,
-                        value=0,
+                        value=1,
                         marks={**{i: str(i) for i in range(1000, self.sampler.proposal.chain_length + 1, 1000)},
-                               **{0: '0'}}
+                               **{1: '1'}}
                     )
                 ], style={'width': '100%', 'padding': '10px'})
             ], style={'display': 'flex', 'flexDirection': 'column', 'alignItems': 'center'})

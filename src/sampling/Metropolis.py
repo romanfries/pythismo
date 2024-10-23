@@ -9,11 +9,13 @@ from pytorch3d.loss.point_mesh_distance import point_face_distance
 from src.sampling.proposals import ParameterProposalType
 
 
-def unnormalised_log_posterior(distances, parameters, translation, rotation, gamma, sigma_lm, sigma_mod,
+def unnormalised_log_posterior(distances, inv_cov_operator, parameters, translation, rotation, gamma, sigma_lm,
+                               sigma_mod,
                                uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
     """
     Calculates the unnormalised log posterior given the distance of each point of the target to its closest point on the
-    surface of the current shape and the model parameters of the current shape.
+    surface of the current shape and the model parameters of the current shape. It is possible to use a regularisation
+    matrix to regularise the distance vector.
     This method can also be called for entire batches of shapes.
     The prior term pushes the solution towards a more likely shape by penalizing unlikely shape deformations. A
     zero-mean Gaussian distribution with variances corresponding to the input parameters is assumed for all 3 types of
@@ -23,6 +25,10 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     :param distances: Tensor with distances from each point of the target to the closest point on the surface of the
     current shapes considered with shape (num_target_points, batch_size).
     :type distances: torch.Tensor
+    :param inv_cov_operator: Inverse of a covariance operator to regularise the distance vector with shape
+    (num_target_points, num_target_points), see the paper F. Steinke and B. Schölkopf - Kernels, regularization and
+    differential equations for more in-depth information.
+    :type inv_cov_operator: torch.Tensor
     :param parameters: Tensor with the current model parameters of the current shapes considered with shape
     (num_parameters, batch_size).
     :type parameters: torch.Tensor
@@ -49,8 +55,9 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     :return: Tensor with the unnormalised log posterior values of the analysed shapes with shape (batch_size,).
     :rtype: torch.Tensor
     """
-    distances_squared = torch.pow(distances, 2)
-    log_likelihoods = 0.5 * gamma * (torch.mean(-distances_squared, dim=0) / sigma_lm)
+    residual = torch.mul(distances, inv_cov_operator @ distances)
+    sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
+    log_likelihoods = 0.5 * gamma * (torch.mean(-residual, dim=0) / sigma_lm)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -62,8 +69,9 @@ def unnormalised_log_posterior(distances, parameters, translation, rotation, gam
     return log_likelihoods + log_prior + log_translation + log_rotation
 
 
-def unnormalised_log_posterior_curvature(distances, parameters, translation, rotation, gamma, sigma_lm, sigma_mod,
-                                         rel_curvs, uniform_pose_prior=True, sigma_trans=20.0, sigma_rot=0.005):
+def unnormalised_log_posterior_curvature(distances, inv_cov_operator, parameters, translation, rotation, gamma,
+                                         sigma_lm, sigma_mod, rel_curvs, uniform_pose_prior=True, sigma_trans=20.0,
+                                         sigma_rot=0.005):
     """
     Same method as above, but the individual independent point contributions are weighted with the local curvature when 
     calculating the likelihood term.
@@ -71,6 +79,10 @@ def unnormalised_log_posterior_curvature(distances, parameters, translation, rot
     :param distances: Tensor with distances from each point of the target to the closest point on the surface of the
     current shapes considered with shape (num_target_points, batch_size).
     :type distances: torch.Tensor
+    :param inv_cov_operator: Inverse of a covariance operator to regularise the distance vector with shape
+    (num_target_points, num_target_points), see the paper F. Steinke and B. Schölkopf - Kernels, regularization and
+    differential equations for more in-depth information.
+    :type inv_cov_operator: torch.Tensor
     :param parameters: Tensor with the current model parameters of the current shapes considered with shape
     (num_parameters, batch_size).
     :type parameters: torch.Tensor
@@ -99,8 +111,9 @@ def unnormalised_log_posterior_curvature(distances, parameters, translation, rot
     :return: Tensor with the unnormalised log posterior values of the analysed shapes with shape (batch_size,).
     :rtype: torch.Tensor
     """
-    distances_squared = torch.pow(distances, 2)
-    log_likelihoods = 0.5 * gamma * (torch.sum(torch.mul((-distances_squared / sigma_lm), rel_curvs), dim=0))
+    residual = torch.mul(distances, inv_cov_operator @ distances)
+    sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
+    log_likelihoods = 0.5 * gamma * (torch.sum(torch.mul((-residual / sigma_lm), rel_curvs), dim=0))
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -175,6 +188,10 @@ class PDMMetropolisSampler:
         self.var_prior_rot = var_prior_rot
         if self.uniform_pose_prior:
             self.var_prior_trans, self.var_prior_rot = 0.0, 0.0
+
+        self.target_clouds = self.target.to_pytorch3d_pointclouds()
+        self.full_target_clouds = None
+
         # TODO: Introduce input variables to control curvature-dependent weighting from the main script.
         # Mean curvature is the average of the 2 principal curvatures.
         # curvatures, directions = pytorch3d.ops.estimate_pointcloud_local_coord_frames(
@@ -183,11 +200,34 @@ class PDMMetropolisSampler:
         # Use the reciprocals of the relative curvatures as weights
         # self.mean_curv = (1 / (mean_curv.permute(1, 0) + 1e-8)) / (1 / (mean_curv.permute(1, 0) + 1e-8)).sum(dim=0, keepdim=True)
         # self.mean_curv = mean_curv.permute(1, 0)
+
+        # PyTorch3D function leaves all diagonal elements at 0.
+        # TODO: Only calculate the graph laplacian once as it doesn't change.
+        # target_meshes = self.target.to_pytorch3d_meshes()
+        # edges = target_meshes.edges_packed()[
+        #        target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
+        graph_laplacian = -pytorch3d.ops.cot_laplacian(self.target_points[:, :, 0], self.target.cells[0].data)[
+           0].to_dense()
+        # graph_laplacian = -pytorch3d.ops.norm_laplacian(self.target_points[:, :, 0], edges).to_dense()
+        sums = -graph_laplacian.sum(dim=1)
+        D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
+        graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
+        graph_laplacian = D @ graph_laplacian @ D
+        identity = torch.diag(torch.ones(self.target_points.size(0), device=self.dev))
+        self.inv_cov_operator = 0.1 * identity + 0.3 * graph_laplacian
+        # self.inv_cov_operator = identity
+
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL_RANDOM)
         self.old_posterior = self.posterior
-        self.accepted_par = self.accepted_rnd = self.accepted_trans = self.accepted_rot = 0
-        self.rejected_par = self.rejected_rnd = self.rejected_trans = self.rejected_rot = 0
+        self.accepted_par = torch.zeros(self.batch_size, device=self.dev)
+        self.accepted_rnd = torch.zeros(self.batch_size, device=self.dev)
+        self.accepted_trans = torch.zeros(self.batch_size, device=self.dev)
+        self.accepted_rot = torch.zeros(self.batch_size, device=self.dev)
+        self.rejected_par = torch.zeros(self.batch_size, device=self.dev)
+        self.rejected_rnd = torch.zeros(self.batch_size, device=self.dev)
+        self.rejected_trans = torch.zeros(self.batch_size, device=self.dev)
+        self.rejected_rot = torch.zeros(self.batch_size, device=self.dev)
         self.save_chain = save_full_mesh_chain
         self.full_chain = []
         self.save_residuals = save_residuals
@@ -250,11 +290,11 @@ class PDMMetropolisSampler:
             # be identical (equal to the full number of model points N).
             differences = torch.sub(self.points, self.target_points)
             distances = torch.linalg.vector_norm(differences, dim=1)
-            posterior = unnormalised_log_posterior(distances, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.gamma, self.var_like,
-                                                   self.var_prior_mod, self.uniform_pose_prior, self.var_prior_trans,
-                                                   self.var_prior_rot)
-            # posterior = unnormalised_log_posterior_curvature(distances, self.proposal.parameters,
+            posterior = unnormalised_log_posterior(distances, self.inv_cov_operator, self.proposal.parameters,
+                                                   self.proposal.translation, self.proposal.rotation, self.gamma,
+                                                   self.var_like, self.var_prior_mod, self.uniform_pose_prior,
+                                                   self.var_prior_trans, self.var_prior_rot)
+            # posterior = unnormalised_log_posterior_curvature(distances, self.inv_cov_operator, self.proposal.parameters,
             #                                                  self.proposal.translation, self.proposal.rotation,
             #                                                  self.gamma, self.var_like, self.var_prior_mod,
             #                                                  self.mean_curv, self.uniform_pose_prior,
@@ -262,8 +302,6 @@ class PDMMetropolisSampler:
 
         else:
             reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
-            target_meshes = self.target.to_pytorch3d_meshes()
-            target_clouds = self.target.to_pytorch3d_pointclouds()
             # packed representation for faces
             verts_packed = reference_meshes.verts_packed()
             faces_packed = reference_meshes.faces_packed()
@@ -271,9 +309,9 @@ class PDMMetropolisSampler:
             tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
             # max_tris = reference_meshes.num_faces_per_mesh().max().item()
 
-            points = target_clouds.points_packed()  # (P, 3)
-            points_first_idx = target_clouds.cloud_to_packed_first_idx()
-            max_points = target_clouds.num_points_per_cloud().max().item()
+            points = self.target_clouds.points_packed()  # (P, 3)
+            points_first_idx = self.target_clouds.cloud_to_packed_first_idx()
+            max_points = self.target_clouds.num_points_per_cloud().max().item()
 
             # point to face squared distance: shape (P,)
             # requires dtype=torch.float32
@@ -282,27 +320,18 @@ class PDMMetropolisSampler:
                 (-1, int(self.target.num_points)))
             point_to_face = torch.transpose(point_to_face_transposed, 0, 1)
 
-            # PyTorch3D function leaves all diagonal elements at 0.
-            edges = target_meshes.edges_packed()[target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
-            # graph_laplacian = -pytorch3d.ops.cot_laplacian(self.target_points[:, :, 0], self.target.cells[0].data)[0].to_dense()
-            graph_laplacian = -pytorch3d.ops.norm_laplacian(self.target_points[:, :, 0], edges).to_dense()
-            sums = -graph_laplacian.sum(dim=1)
-            D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
-            graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
-            graph_laplacian = D @ graph_laplacian @ D
-            identity = torch.diag(torch.ones(graph_laplacian.size(0), device=self.dev))
-            regularizer = 1.0 * identity + 3.0 * graph_laplacian
-            residual = regularizer @ torch.sqrt(point_to_face)
             # Target is a point cloud, reference a mesh.
-            posterior = unnormalised_log_posterior(residual, self.proposal.parameters, self.proposal.translation,
-                                                   self.proposal.rotation, self.gamma, 3.0 * self.var_like,
+            posterior = unnormalised_log_posterior(torch.sqrt(point_to_face), self.inv_cov_operator,
+                                                   self.proposal.parameters, self.proposal.translation,
+                                                   self.proposal.rotation, self.gamma, self.var_like,
                                                    self.var_prior_mod, self.uniform_pose_prior, self.var_prior_trans,
                                                    self.var_prior_rot)
-            # posterior = unnormalised_log_posterior_curvature(torch.sqrt(point_to_face), self.proposal.parameters,
-            #                                                  self.proposal.translation, self.proposal.rotation,
-            #                                                  self.gamma, self.var_like, self.var_prior_mod,
-            #                                                  self.mean_curv, self.uniform_pose_prior,
-            #                                                  self.var_prior_trans, self.var_prior_rot)
+            # posterior = unnormalised_log_posterior_curvature(torch.sqrt(point_to_face), self.inv_cov_operator,
+            #                                                  self.proposal.parameters, self.proposal.translation,
+            #                                                  self.proposal.rotation, self.gamma, self.var_like,
+            #                                                  self.var_prior_mod, self.mean_curv,
+            #                                                  self.uniform_pose_prior, self.var_prior_trans,
+            #                                                  self.var_prior_rot)
 
         self.posterior = posterior
 
@@ -338,17 +367,17 @@ class PDMMetropolisSampler:
             self.residuals_n.append(residual_n)
 
         if parameter_proposal_type == ParameterProposalType.MODEL_INFORMED:
-            self.accepted_par += decider.sum().item()
-            self.rejected_par += (self.batch_size - decider.sum().item())
+            self.accepted_par += decider
+            self.rejected_par += ~(decider)
         elif parameter_proposal_type == ParameterProposalType.MODEL_RANDOM:
-            self.accepted_rnd += decider.sum().item()
-            self.rejected_rnd += (self.batch_size - decider.sum().item())
+            self.accepted_rnd += decider
+            self.rejected_rnd += ~(decider)
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
-            self.accepted_trans += decider.sum().item()
-            self.rejected_trans += (self.batch_size - decider.sum().item())
+            self.accepted_trans += decider
+            self.rejected_trans += ~(decider)
         else:
-            self.accepted_rot += decider.sum().item()
-            self.rejected_rot += (self.batch_size - decider.sum().item())
+            self.accepted_rot += decider
+            self.rejected_rot += ~(decider)
 
     def get_residual(self, full_target):
         """
@@ -369,7 +398,8 @@ class PDMMetropolisSampler:
         residual_c = torch.linalg.vector_norm(differences, dim=1)
 
         reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
-        target_clouds = full_target.to_pytorch3d_pointclouds(batch_size=self.batch_size)
+        if self.full_target_clouds is None:
+            self.full_target_clouds = full_target.to_pytorch3d_pointclouds(batch_size=self.batch_size)
         # packed representation for faces
         verts_packed = reference_meshes.verts_packed()
         faces_packed = reference_meshes.faces_packed()
@@ -377,9 +407,9 @@ class PDMMetropolisSampler:
         tris_first_idx = reference_meshes.mesh_to_faces_packed_first_idx()
         # max_tris = reference_meshes.num_faces_per_mesh().max().item()
 
-        points = target_clouds.points_packed()  # (P, 3)
-        points_first_idx = target_clouds.cloud_to_packed_first_idx()
-        max_points = target_clouds.num_points_per_cloud().max().item()
+        points = self.full_target_clouds.points_packed()  # (P, 3)
+        points_first_idx = self.full_target_clouds.cloud_to_packed_first_idx()
+        max_points = self.full_target_clouds.num_points_per_cloud().max().item()
 
         # point to face squared distance: shape (P,)
         # requires dtype=torch.float32
@@ -390,11 +420,14 @@ class PDMMetropolisSampler:
 
         return residual_c, residual_n
 
-    def acceptance_ratio(self):
+    def acceptance_ratio(self, selector):
         # TODO: Handle the case where no ICP proposals are used. In this case, a division-by-zero error occurs.
         """
-        Returns the ratio of accepted samples to the total number of random parameter draws.
+        Returns the ratio of accepted samples to the total number of (random) parameter draws.
 
+        :param selector: Tensor of shape (batch_size,) that indicates which chains should be considered and which should
+        not.
+        :type selector: torch.Tensor
         :return: Tuple containing 5 float elements:
             - Ratio of accepted proposals when the model parameters have been adjusted using the informed ICP proposal.
             - Ratio of accepted proposals when the model parameters have been adjusted using a random walk proposal.
@@ -403,12 +436,12 @@ class PDMMetropolisSampler:
             - Total ratio of accepted proposals.
         :rtype: tuple
         """
-        accepted_tot = self.accepted_par + self.accepted_rnd + self.accepted_trans + self.accepted_rot
-        rejected_tot = self.rejected_par + self.rejected_rnd + self.rejected_trans + self.rejected_rot
-        ratio_par = float(self.accepted_par) / (self.accepted_par + self.rejected_par)
-        ratio_rnd = float(self.accepted_rnd) / (self.accepted_rnd + self.rejected_rnd)
-        ratio_trans = float(self.accepted_trans) / (self.accepted_trans + self.rejected_trans)
-        ratio_rot = float(self.accepted_rot) / (self.accepted_rot + self.rejected_rot)
+        accepted_tot = torch.sum((self.accepted_par + self.accepted_rnd + self.accepted_trans + self.accepted_rot)[selector]).item()
+        rejected_tot = torch.sum((self.rejected_par + self.rejected_rnd + self.rejected_trans + self.rejected_rot)[selector]).item()
+        ratio_par = float(torch.sum(self.accepted_par[selector]).item()) / torch.sum((self.accepted_par + self.rejected_par)[selector]).item()
+        ratio_rnd = float(torch.sum(self.accepted_rnd[selector]).item()) / torch.sum((self.accepted_rnd + self.rejected_rnd)[selector]).item()
+        ratio_trans = float(torch.sum(self.accepted_trans[selector]).item()) / torch.sum((self.accepted_trans + self.rejected_trans)[selector]).item()
+        ratio_rot = float(torch.sum(self.accepted_rot[selector]).item()) / torch.sum((self.accepted_rot + self.rejected_rot)[selector]).item()
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
         return ratio_par, ratio_rnd, ratio_trans, ratio_rot, ratio_tot
         # return ratio_par, None, None, ratio_tot

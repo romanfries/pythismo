@@ -3,6 +3,9 @@ import json
 import seaborn as sns
 from pathlib import Path
 from matplotlib import pyplot as plt
+import plotly.io as pio
+import plotly.graph_objects as go
+import plotly.colors as pc
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -20,11 +23,13 @@ class DataHandler:
         # self.statistics_dir = self.main_dir
         self.chain_dir = self.main_dir / Path('chains')
         self.plot_dir = self.main_dir / Path('plots')
+        self.traceplot_dir = self.main_dir / Path('traceplots')
         self.samples_dir = self.main_dir / Path('samples')
         self.statistics_dir.mkdir(parents=True, exist_ok=True)
         self.chain_dir.mkdir(parents=True, exist_ok=True)
         self.plot_dir.mkdir(parents=True, exist_ok=True)
         self.samples_dir.mkdir(parents=True, exist_ok=True)
+        self.traceplot_dir.mkdir(parents=True, exist_ok=True)
 
     def write_statistics(self, data, loo, obs, additional_param):
         output_filename = f'mcmc_{loo}_{obs}_{additional_param}.json'
@@ -33,13 +38,14 @@ class DataHandler:
             json.dump(data, f, indent=4)
 
     def read_all_statistics(self):
-        ess_list = []
+        ess_list, rhat_list = [], []
         mean_dist_c_post_list, mean_dist_n_post_list, mean_dist_c_map_list, mean_dist_n_map_list = [], [], [], []
-        avg_var_post_list, avg_var_map_list = [], []
+        squared_c_post_list, squared_n_post_list, squared_c_map_list, squared_n_map_list = [], [], [], []
+        avg_var_list = []
         means_list, mins_list, maxs_list, vars_list = [], [], [], []
         observed_list = []
-        # acc_par_list, acc_rnd_list, acc_trans_list, acc_rot_list, acc_tot_list = [], [], [], [], []
-        acc_par_list, acc_trans_list, acc_rot_list, acc_tot_list = [], [], [], []
+        acc_par_list, acc_rnd_list, acc_trans_list, acc_rot_list, acc_tot_list = [], [], [], [], []
+        # acc_par_list,  acc_trans_list, acc_rot_list, acc_tot_list = [], [], [], []
         loo_list, obs_list, additional_param_list = [], [], []
 
         json_files = sorted(self.statistics_dir.glob('*.json'))
@@ -49,21 +55,30 @@ class DataHandler:
                 loaded_data = json.load(f)
 
                 ess = torch.tensor(loaded_data['effective_sample_sizes']['ess_per_param'])
+                rhat = torch.tensor(loaded_data['effective_sample_sizes']['rhat_per_param'])
+
                 ess_list.append(ess)
+                rhat_list.append(rhat)
 
                 mean_dist_c_post = torch.tensor(loaded_data['accuracy']['mean_dist_corr_post'])
                 mean_dist_n_post = torch.tensor(loaded_data['accuracy']['mean_dist_clp_post'])
+                # squared_c_post = torch.tensor(loaded_data['accuracy']['squared_corr_post'])
+                # squared_n_post = torch.tensor(loaded_data['accuracy']['squared_clp_post'])
                 mean_dist_c_map = torch.tensor(loaded_data['accuracy']['mean_dist_corr_map'])
                 mean_dist_n_map = torch.tensor(loaded_data['accuracy']['mean_dist_clp_map'])
-                avg_var_post = torch.tensor(loaded_data['accuracy']['var_post'])
-                avg_var_map = torch.tensor(loaded_data['accuracy']['var_map'])
+                # squared_c_map = torch.tensor(loaded_data['accuracy']['squared_corr_map'])
+                # squared_n_map = torch.tensor(loaded_data['accuracy']['squared_clp_map'])
+                avg_var = torch.tensor(loaded_data['accuracy']['var'])
 
                 mean_dist_c_post_list.append(mean_dist_c_post)
                 mean_dist_n_post_list.append(mean_dist_n_post)
+                # squared_c_post_list.append(squared_c_post)
+                # squared_n_post_list.append(squared_n_post)
                 mean_dist_c_map_list.append(mean_dist_c_map)
                 mean_dist_n_map_list.append(mean_dist_n_map)
-                avg_var_post_list.append(avg_var_post)
-                avg_var_map_list.append(avg_var_map)
+                # squared_c_map_list.append(squared_c_map)
+                # squared_n_map_list.append(squared_n_map)
+                avg_var_list.append(avg_var)
 
                 means = torch.tensor(loaded_data['unnormalised_log_density_posterior']['mean'])
                 mins = torch.tensor(loaded_data['unnormalised_log_density_posterior']['min'])
@@ -79,13 +94,13 @@ class DataHandler:
                 observed_list.append(observed)
 
                 acc_par = loaded_data['acceptance']['model']
-                # acc_rnd = loaded_data['acceptance']['random_noise']
+                acc_rnd = loaded_data['acceptance']['random_noise']
                 acc_trans = loaded_data['acceptance']['translation']
                 acc_rot = loaded_data['acceptance']['rotation']
                 acc_tot = loaded_data['acceptance']['total']
 
                 acc_par_list.append(acc_par)
-                # acc_rnd_list.append(acc_rnd)
+                acc_rnd_list.append(acc_rnd)
                 acc_trans_list.append(acc_trans)
                 acc_rot_list.append(acc_rot)
                 acc_tot_list.append(acc_tot)
@@ -99,25 +114,30 @@ class DataHandler:
                 additional_param_list.append(additional_param)
 
         stacked_data = {
-            'effective_sample_sizes': pad_sequence(ess_list, batch_first=True),
+            'effective_sample_sizes': torch.stack(ess_list),
             'accuracy': {
-                'mean_dist_corr_post': torch.stack(mean_dist_c_post_list),
-                'mean_dist_clp_post': torch.stack(mean_dist_n_post_list),
+                'mean_dist_corr_post': pad_sequence([elem.T for elem in mean_dist_c_post_list],
+                                                    batch_first=True).permute(0, 2, 1),
+                'mean_dist_clp_post': pad_sequence([elem.T for elem in mean_dist_n_post_list],
+                                                   batch_first=True).permute(0, 2, 1),
+                # 'squared_corr_post': pad_sequence([elem.T for elem in squared_c_post_list], batch_first=True).permute(0, 2, 1),
+                # 'squared_clp_post': pad_sequence([elem.T for elem in squared_n_post_list], batch_first=True).permute(0, 2, 1),
                 'mean_dist_corr_map': torch.stack(mean_dist_c_map_list),
                 'mean_dist_clp_map': torch.stack(mean_dist_n_map_list),
-                'var_post': torch.stack(avg_var_post_list),
-                'var_map': torch.stack(avg_var_map_list)
+                # 'squared_corr_map': torch.stack(squared_c_map_list),
+                # 'squared_clp_map': torch.stack(squared_n_map_list),
+                'var': pad_sequence([elem.T for elem in avg_var_list], batch_first=True).permute(0, 2, 1)
             },
             'unnormalised_log_density_posterior': {
-                'mean': torch.stack(means_list),
-                'min': torch.stack(mins_list),
-                'max': torch.stack(maxs_list),
-                'var': torch.stack(vars_list)
+                'mean': pad_sequence(means_list, batch_first=True),
+                'min': pad_sequence(mins_list, batch_first=True),
+                'max': pad_sequence(maxs_list, batch_first=True),
+                'var': pad_sequence(vars_list, batch_first=True)
             },
             'observed': torch.stack(observed_list),
             'acceptance': {
                 'model': torch.tensor(acc_par_list),
-                # 'random_noise': torch.tensor(acc_rnd_list),
+                'random_noise': torch.tensor(acc_rnd_list),
                 'translation': torch.tensor(acc_trans_list),
                 'rotation': torch.tensor(acc_rot_list),
                 'total': torch.tensor(acc_tot_list)
@@ -138,13 +158,17 @@ class DataHandler:
             loaded_data = json.load(f)
 
             ess = torch.tensor(loaded_data['effective_sample_sizes']['ess_per_param'])
+            rhat = torch.tensor(loaded_data['effective_sample_sizes']['rhat_per_param'])
 
             mean_dist_c_post = torch.tensor(loaded_data['accuracy']['mean_dist_corr_post'])
             mean_dist_n_post = torch.tensor(loaded_data['accuracy']['mean_dist_clp_post'])
+            # squared_c_post = torch.tensor(loaded_data['accuracy']['squared_corr_post'])
+            # squared_n_post = torch.tensor(loaded_data['accuracy']['squared_clp_post'])
             mean_dist_c_map = torch.tensor(loaded_data['accuracy']['mean_dist_corr_map'])
             mean_dist_n_map = torch.tensor(loaded_data['accuracy']['mean_dist_clp_map'])
-            avg_var_post = torch.tensor(loaded_data['accuracy']['var_post'])
-            avg_var_map = torch.tensor(loaded_data['accuracy']['var_map'])
+            # squared_c_map = torch.tensor(loaded_data['accuracy']['squared_corr_map'])
+            # squared_n_map = torch.tensor(loaded_data['accuracy']['squared_clp_map'])
+            avg_var = torch.tensor(loaded_data['accuracy']['var'])
 
             means = torch.tensor(loaded_data['unnormalised_log_density_posterior']['mean'])
             mins = torch.tensor(loaded_data['unnormalised_log_density_posterior']['min'])
@@ -168,10 +192,13 @@ class DataHandler:
             'accuracy': {
                 'mean_dist_corr_post': mean_dist_c_post,
                 'mean_dist_clp_post': mean_dist_n_post,
+                # 'squared_corr_post': squared_c_post,
+                # 'squared_clp_post': squared_n_post,
                 'mean_dist_corr_map': mean_dist_c_map,
                 'mean_dist_clp_map': mean_dist_n_map,
-                'var_post': avg_var_post,
-                'var_map': avg_var_map
+                # 'squared_corr_map': squared_c_map,
+                # 'squared_clp_map': squared_n_map,
+                'var': avg_var
             },
             'unnormalised_log_density_posterior': {
                 'mean': means,
@@ -228,11 +255,12 @@ class DataHandler:
                          yaxis={"backgroundcolor": "rgb(250, 235, 235)"},
                          zaxis={"backgroundcolor": "rgb(250, 235, 235)"}, axis_args=AxisArgs(showgrid=True))
 
-        for idx, mesh_ in enumerate(fig.data):
+        colors = pc.sample_colorscale(pc.get_colorscale('Bluyl'), num_samples)
+        for idx, mesh_ in enumerate(fig.data[:-1]):
             mesh_.opacity = 0.90
-            mesh_.color = 'limegreen'
+            mesh_.color = colors[idx]
         fig.data[-1].opacity = 0.90
-        fig.data[-1].color = 'darkmagenta'
+        fig.data[-1].color = 'yellow'
 
         fig.update_annotations(font=dict(size=10))
 
@@ -247,6 +275,44 @@ class DataHandler:
         else:
             fig.write_image(output_file, width=1920, height=1080)
 
+    def save_target_map_dist(self, target, distances, loo, obs, additional_param, save_html=False):
+        target.change_device('cpu')
+        fig = go.Figure(data=[go.Mesh3d(x=target.tensor_points[:, 0].numpy(),
+                                        y=target.tensor_points[:, 1].numpy(),
+                                        z=target.tensor_points[:, 2].numpy(),
+                                        i=target.cells[0].data[:, 0].numpy(),
+                                        j=target.cells[0].data[:, 1].numpy(),
+                                        k=target.cells[0].data[:, 2].numpy(),
+                                        intensity=distances.cpu().numpy(),
+                                        colorscale='bluered',
+                                        cmin=0,
+                                        cmax=25,
+                                        colorbar=dict(title='Distance [mm]', thickness=20, x=0.7),
+                                        intensitymode='vertex'
+                                        )
+                              ]
+                        )
+        fig.update_layout(
+            title=f'Distance from MAP estimate to true target femur {loo} [mm]',
+            scene=dict(
+                xaxis_title='x',
+                yaxis_title='y',
+                zaxis_title='z'
+            )
+        )
+
+        if save_html:
+            output_filename = f'target_dist_{loo}_{obs}_{additional_param}.html'
+        else:
+            output_filename = f'target_dist_{loo}_{obs}_{additional_param}.png'
+        output_file = self.samples_dir / output_filename
+
+        if save_html:
+            fig.write_html(output_file)
+        else:
+            fig.write_image(output_file, width=1920, height=1080)
+
+    # TODO: Add an additional parameter for the following three read and write methods (see method above).
     def write_chain_and_residuals(self, dict_chain_and_residuals, loo, obs):
         # There is currently no application implemented for stored chains and residuals.
         output_filename = f'mesh_chain_{loo}_{obs}.pt'
@@ -259,78 +325,114 @@ class DataHandler:
         output_file = self.chain_dir / output_filename
         torch.save(dict_param_chain_posterior, output_file)
 
+    def read_param_chain_posterior(self, loo, obs):
+        input_filename = f'param_chain_{loo}_{obs}.pt'
+        input_file = self.chain_dir / input_filename
+        dict_param_chain_posterior = torch.load(input_file)
+        return dict_param_chain_posterior
+
+    def write_traceplots(self, traceplots, loo, obs, additional_param):
+        dir = self.traceplot_dir / Path(f'traceplots_{loo}_{obs}_{additional_param}')
+        dir.mkdir(parents=True, exist_ok=True)
+        for chain, traceplot in enumerate(traceplots):
+            output_filename = f'log_density_posterior_{chain}.png'
+            output_file = dir / output_filename
+            pio.write_image(traceplot, output_file)
+
     def generate_plots(self, data_dict=None, add_param_available=False):
         # Needs to be adjusted depending on the experiments performed
         if data_dict is None:
             data_dict = self.read_all_statistics()
 
-        # Remove femurs whose Markov chains often do not converge
-        # mask = ~torch.isin(data_dict['identifiers']['reconstructed_shape'], torch.tensor([22, 32, 41, 44]))
-        # mask = ~torch.gt(torch.var(data_dict['unnormalised_log_density_posterior']['mean'], dim=1), 1.0)
         # Prepare the data
         mean_dist_c_post = data_dict['accuracy']['mean_dist_corr_post']
         mean_dist_n_post = data_dict['accuracy']['mean_dist_clp_post']
+        # squared_c_post = data_dict['accuracy']['squared_corr_post']
+        squared_c_post = torch.ones_like(mean_dist_c_post)
+        # squared_n_post = data_dict['accuracy']['squared_clp_post']
+        squared_n_post = torch.ones_like(mean_dist_n_post)
         mean_dist_c_map = data_dict['accuracy']['mean_dist_corr_map']
         mean_dist_n_map = data_dict['accuracy']['mean_dist_clp_map']
-        avg_var_post = data_dict['accuracy']['var_post']
-        avg_var_map = data_dict['accuracy']['var_map']
+        # squared_c_map = data_dict['accuracy']['squared_corr_map']
+        squared_c_map = torch.ones_like(mean_dist_c_map)
+        # squared_n_map = data_dict['accuracy']['squared_clp_map']
+        squared_n_map = torch.ones_like(mean_dist_n_map)
+        avg_var = data_dict['accuracy']['var']
 
         obs = data_dict['identifiers']['percentage_observed']
         additional_param = data_dict['identifiers']['additional_param']
         observed = data_dict['observed']
 
         # avg_var_all = avg_var.mean(dim=1).numpy()
-        mean_dist_c_post_all = mean_dist_c_post.mean(dim=1).numpy()
-        mean_dist_n_post_all = mean_dist_n_post.mean(dim=1).numpy()
-        mean_dist_c_map_all = mean_dist_c_map.mean(dim=1).numpy()
+        mean_dist_c_post_all = mean_dist_c_post.nanmean(dim=2).nanmean(dim=1).numpy()
+        mean_dist_n_post_all = mean_dist_n_post.nanmean(dim=1).nanmean(dim=1).numpy()
+        squared_c_post_all = squared_c_post.nanmean(dim=2).nanmean(dim=1).numpy()
+        squared_n_post_all = squared_n_post.nanmean(dim=2).nanmean(dim=1).numpy()
+        mean_dist_c_map_all = mean_dist_c_map.nanmean(dim=1).numpy()
         # mean_dist_c_map[observed] = float('nan')
         # mean_dist_c_map_all = mean_dist_c_map.nanmean(dim=1).numpy()
-        mean_dist_n_map_all = mean_dist_n_map.mean(dim=1).numpy()
-        avg_var_post_all = avg_var_post.mean(dim=1).numpy()
-        avg_var_map_all = avg_var_map.mean(dim=1).numpy()
+        mean_dist_n_map_all = mean_dist_n_map.nanmean(dim=1).numpy()
+        squared_c_map_all = squared_c_map.nanmean(dim=1).numpy()
+        squared_n_map_all = squared_n_map.nanmean(dim=1).numpy()
+        avg_var_all = avg_var.nanmean(dim=2).nanmean(dim=1).numpy()
+
+        # Create the statistics depending on whether the corresponding point was observed or not
+        # avg_var_copy_t, avg_var_copy_f = avg_var.clone(), avg_var.clone()
+        mean_dist_c_post_copy_t, mean_dist_c_post_copy_f = mean_dist_c_post.clone(), mean_dist_c_post.clone()
+        mean_dist_n_post_copy_t, mean_dist_n_post_copy_f = mean_dist_n_post.clone(), mean_dist_n_post.clone()
+        squared_c_post_copy_t, squared_c_post_copy_f = squared_c_post.clone(), squared_c_post.clone()
+        squared_n_post_copy_t, squared_n_post_copy_f = squared_n_post.clone(), squared_n_post.clone()
+        mean_dist_c_map_copy_t, mean_dist_c_map_copy_f = mean_dist_c_map.clone(), mean_dist_c_map.clone()
+        mean_dist_n_map_copy_t, mean_dist_n_map_copy_f = mean_dist_n_map.clone(), mean_dist_n_map.clone()
+        squared_c_map_copy_t, squared_c_map_copy_f = squared_c_map.clone(), squared_c_map.clone()
+        squared_n_map_copy_t, squared_n_map_copy_f = squared_n_map.clone(), squared_n_map.clone()
+        avg_var_copy_t, avg_var_copy_f = avg_var.clone(), avg_var.clone()
+
+        # avg_var_copy_t[~obs] = float('nan')
+        mean_dist_c_post_copy_t[~observed] = float('nan')
+        mean_dist_n_post_copy_t[~observed] = float('nan')
+        squared_c_post_copy_t[~observed] = float('nan')
+        squared_n_post_copy_t[~observed] = float('nan')
+        mean_dist_c_map_copy_t[~observed] = float('nan')
+        mean_dist_n_map_copy_t[~observed] = float('nan')
+        squared_c_map_copy_t[~observed] = float('nan')
+        squared_n_map_copy_t[~observed] = float('nan')
+        avg_var_copy_t[~observed] = float('nan')
+
+        # avg_var_mean_t = torch.nanmean(avg_var_copy_t, dim=1)
+        mean_dist_c_post_mean_t = torch.nanmean(torch.nanmean(mean_dist_c_post_copy_t, dim=2), dim=1)
+        mean_dist_n_post_mean_t = torch.nanmean(torch.nanmean(mean_dist_n_post_copy_t, dim=2), dim=1)
+        squared_c_post_mean_t = torch.nanmean(torch.nanmean(squared_c_post_copy_t, dim=2), dim=1)
+        squared_n_post_mean_t = torch.nanmean(torch.nanmean(squared_n_post_copy_t, dim=2), dim=1)
+        mean_dist_c_map_mean_t = torch.nanmean(mean_dist_c_map_copy_t, dim=1)
+        mean_dist_n_map_mean_t = torch.nanmean(mean_dist_n_map_copy_t, dim=1)
+        squared_c_map_mean_t = torch.nanmean(squared_c_map_copy_t, dim=1)
+        squared_n_map_mean_t = torch.nanmean(squared_n_map_copy_t, dim=1)
+        avg_var_mean_t = torch.nanmean(torch.nanmean(avg_var_copy_t, dim=2), dim=1)
+
+        # avg_var_copy_f[obs] = float('nan')
+        mean_dist_c_post_copy_f[observed] = float('nan')
+        mean_dist_n_post_copy_f[observed] = float('nan')
+        squared_c_post_copy_f[observed] = float('nan')
+        squared_n_post_copy_f[observed] = float('nan')
+        mean_dist_c_map_copy_f[observed] = float('nan')
+        mean_dist_n_map_copy_f[observed] = float('nan')
+        squared_c_map_copy_f[observed] = float('nan')
+        squared_n_map_copy_f[observed] = float('nan')
+        avg_var_copy_f[observed] = float('nan')
+
+        # avg_var_mean_f = torch.nanmean(avg_var_copy_f, dim=1)
+        mean_dist_c_post_mean_f = torch.nanmean(torch.nanmean(mean_dist_c_post_copy_f, dim=2), dim=1)
+        mean_dist_n_post_mean_f = torch.nanmean(torch.nanmean(mean_dist_n_post_copy_f, dim=2), dim=1)
+        squared_c_post_mean_f = torch.nanmean(torch.nanmean(squared_c_post_copy_f, dim=2), dim=1)
+        squared_n_post_mean_f = torch.nanmean(torch.nanmean(squared_n_post_copy_f, dim=2), dim=1)
+        mean_dist_c_map_mean_f = torch.nanmean(mean_dist_c_map_copy_f, dim=1)
+        mean_dist_n_map_mean_f = torch.nanmean(mean_dist_n_map_copy_f, dim=1)
+        squared_c_map_mean_f = torch.nanmean(squared_c_map_copy_f, dim=1)
+        squared_n_map_mean_f = torch.nanmean(squared_n_map_copy_f, dim=1)
+        avg_var_mean_f = torch.nanmean(torch.nanmean(avg_var_copy_f, dim=2), dim=1)
 
         if not add_param_available:
-            # Create the statistics depending on whether the corresponding point was observed or not
-            # avg_var_copy_t, avg_var_copy_f = avg_var.clone(), avg_var.clone()
-            mean_dist_c_post_copy_t, mean_dist_c_post_copy_f = mean_dist_c_post.clone(), mean_dist_c_post.clone()
-            mean_dist_n_post_copy_t, mean_dist_n_post_copy_f = mean_dist_n_post.clone(), mean_dist_n_post.clone()
-            mean_dist_c_map_copy_t, mean_dist_c_map_copy_f = mean_dist_c_map.clone(), mean_dist_c_map.clone()
-            mean_dist_n_map_copy_t, mean_dist_n_map_copy_f = mean_dist_n_map.clone(), mean_dist_n_map.clone()
-            avg_var_post_copy_t, avg_var_post_copy_f = avg_var_post.clone(), avg_var_post.clone()
-            avg_var_map_copy_t, avg_var_map_copy_f = avg_var_map.clone(), avg_var_map.clone()
-
-            # avg_var_copy_t[~obs] = float('nan')
-            mean_dist_c_post_copy_t[~observed] = float('nan')
-            mean_dist_n_post_copy_t[~observed] = float('nan')
-            mean_dist_c_map_copy_t[~observed] = float('nan')
-            mean_dist_n_map_copy_t[~observed] = float('nan')
-            avg_var_post_copy_t[~observed] = float('nan')
-            avg_var_map_copy_t[~observed] = float('nan')
-
-            # avg_var_mean_t = torch.nanmean(avg_var_copy_t, dim=1)
-            mean_dist_c_post_mean_t = torch.nanmean(mean_dist_c_post_copy_t, dim=1)
-            mean_dist_n_post_mean_t = torch.nanmean(mean_dist_n_post_copy_t, dim=1)
-            mean_dist_c_map_mean_t = torch.nanmean(mean_dist_c_map_copy_t, dim=1)
-            mean_dist_n_map_mean_t = torch.nanmean(mean_dist_n_map_copy_t, dim=1)
-            avg_var_post_mean_t = torch.nanmean(avg_var_post_copy_t, dim=1)
-            avg_var_map_mean_t = torch.nanmean(avg_var_map_copy_t, dim=1)
-
-            # avg_var_copy_f[obs] = float('nan')
-            mean_dist_c_post_copy_f[observed] = float('nan')
-            mean_dist_n_post_copy_f[observed] = float('nan')
-            mean_dist_c_map_copy_f[observed] = float('nan')
-            mean_dist_n_map_copy_f[observed] = float('nan')
-            avg_var_post_copy_f[observed] = float('nan')
-            avg_var_map_copy_f[observed] = float('nan')
-
-            # avg_var_mean_f = torch.nanmean(avg_var_copy_f, dim=1)
-            mean_dist_c_post_mean_f = torch.nanmean(mean_dist_c_post_copy_f, dim=1)
-            mean_dist_n_post_mean_f = torch.nanmean(mean_dist_n_post_copy_f, dim=1)
-            mean_dist_c_map_mean_f = torch.nanmean(mean_dist_c_map_copy_f, dim=1)
-            mean_dist_n_map_mean_f = torch.nanmean(mean_dist_n_map_copy_f, dim=1)
-            avg_var_post_mean_f = torch.nanmean(avg_var_post_copy_f, dim=1)
-            avg_var_map_mean_f = torch.nanmean(avg_var_map_copy_f, dim=1)
-
             # Plots that do not sort the data according to the additional parameter and ignore it.
             # Average distance to corresponding point across all samples
             df = pd.DataFrame({
@@ -341,7 +443,8 @@ class DataHandler:
             })
 
             df_melted = df.melt(id_vars=['obs'],
-                                value_vars=['mean_dist_c_post_all', 'mean_dist_c_post_mean_t', 'mean_dist_c_post_mean_f'],
+                                value_vars=['mean_dist_c_post_all', 'mean_dist_c_post_mean_t',
+                                            'mean_dist_c_post_mean_f'],
                                 var_name='category', value_name='mean')
 
             category_mapping = {
@@ -358,8 +461,9 @@ class DataHandler:
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
             plt.xlabel('Observed portion of the length of the femur [%]')
-            plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
-                       r'given\ correspondences)\ [\mathrm{mm}]$')
+            plt.ylabel(
+                r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
+                r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
                 'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
@@ -379,7 +483,8 @@ class DataHandler:
             })
 
             df_melted = df.melt(id_vars=['obs'],
-                                value_vars=['mean_dist_n_post_all', 'mean_dist_n_post_mean_t', 'mean_dist_n_post_mean_f'],
+                                value_vars=['mean_dist_n_post_all', 'mean_dist_n_post_mean_t',
+                                            'mean_dist_n_post_mean_f'],
                                 var_name='category', value_name='mean')
 
             category_mapping = {
@@ -488,9 +593,9 @@ class DataHandler:
             # Average variance of the points across all chains and samples
             df = pd.DataFrame({
                 'obs': obs.numpy(),
-                'avg_var_post_all': avg_var_post_all,
-                'avg_var_post_mean_t': avg_var_post_mean_t.numpy(),
-                'avg_var_post_mean_f': avg_var_post_mean_f.numpy()
+                'avg_var_post_all': avg_var_all,
+                'avg_var_post_mean_t': avg_var_mean_t.numpy(),
+                'avg_var_post_mean_f': avg_var_mean_f.numpy()
             })
 
             df_melted = df.melt(id_vars=['obs'],
@@ -523,45 +628,6 @@ class DataHandler:
             plt.savefig(png_plot_file)
             plt.close()
 
-            # Average variance of the points across the MAP estimates of all chains
-            df = pd.DataFrame({
-                'obs': obs.numpy(),
-                'avg_var_map_all': avg_var_map_all,
-                'avg_var_map_mean_t': avg_var_map_mean_t.numpy(),
-                'avg_var_map_mean_f': avg_var_map_mean_f.numpy()
-            })
-
-            df_melted = df.melt(id_vars=['obs'],
-                                value_vars=['avg_var_map_all', 'avg_var_map_mean_t', 'avg_var_map_mean_f'],
-                                var_name='category', value_name='mean')
-
-            category_mapping = {
-                'avg_var_map_all': 'All points',
-                'avg_var_map_mean_t': 'Observed points',
-                'avg_var_map_mean_f': 'Reconstructed points'
-            }
-            df_melted['category'] = df_melted['category'].map(category_mapping)
-            df_melted = df_melted.dropna(subset=['mean'])
-
-            # df['obs'] = df['obs'].astype(int)
-            plt.figure(figsize=(20, 10), dpi=300)
-
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
-
-            plt.xlabel('Observed portion of the length of the femur [%]')
-            plt.ylabel(
-                r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
-            plt.title(
-                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
-                'each one)')
-            plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
-            plt.ylim(0, 100)
-            plt.tight_layout()
-            filename = "map_var_split.png"
-            png_plot_file = self.plot_dir / filename
-            plt.savefig(png_plot_file)
-            plt.close()
-
             # Average distance to corresponding point across all samples
             df = pd.DataFrame({
                 'obs': obs.numpy(),
@@ -572,8 +638,9 @@ class DataHandler:
             sns.boxplot(x='obs', y='mean_dist_c_post_all', data=df, color='skyblue')
 
             plt.xlabel('Observed portion of the length of the femur [%]')
-            plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
-                       r'given\ correspondences)\ [\mathrm{mm}]$')
+            plt.ylabel(
+                r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
+                r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
                 'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 samples each)')
             plt.ylim(0, 25)
@@ -613,8 +680,9 @@ class DataHandler:
             sns.boxplot(x='obs', y='mean_dist_c_map_all', data=df, color='skyblue')
 
             plt.xlabel('Observed portion of the length of the femur [%]')
-            plt.ylabel(r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
-                       r'given\ correspondences)\ [\mathrm{mm}]$')
+            plt.ylabel(
+                r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
+                r'given\ correspondences)\ [\mathrm{mm}]$')
             plt.title(
                 'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
                 'each one)')
@@ -649,7 +717,7 @@ class DataHandler:
             # Average variance of the points across all chains and samples
             df = pd.DataFrame({
                 'obs': obs.numpy(),
-                'avg_var_post_all': avg_var_post_all
+                'avg_var_post_all': avg_var_all
             })
 
             plt.figure(figsize=(20, 10))
@@ -666,48 +734,49 @@ class DataHandler:
             plt.savefig(png_plot_file)
             plt.close()
 
-            # Average variance of the points across the MAP estimates of all chains
-            df = pd.DataFrame({
-                'obs': obs.numpy(),
-                'avg_var_map_all': avg_var_map_all
-            })
-
-            plt.figure(figsize=(20, 10))
-            sns.boxplot(x='obs', y='avg_var_map_all', data=df, color='skyblue')
-
-            plt.xlabel('Observed portion of the length of the femur [%]')
-            plt.ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$')
-            plt.title(
-                'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample selected for'
-                'each one)')
-            plt.ylim(0, 80)
-            plt.tight_layout()
-            filename = "map_var_all.png"
-            png_plot_file = self.plot_dir / filename
-            plt.savefig(png_plot_file)
-            plt.close()
-
         else:
             # Plots that sort the data according to the additional parameter. This allows, for example, runs with a
             # different value of a specific hyperparameter to be compared.
             df = pd.DataFrame({
                 'mean_dist_c_post_all': mean_dist_c_post_all,
+                'mean_dist_c_post_mean_t': mean_dist_c_post_mean_t,
+                'mean_dist_c_post_mean_f': mean_dist_c_post_mean_f,
                 'mean_dist_n_post_all': mean_dist_n_post_all,
+                'mean_dist_n_post_mean_t': mean_dist_n_post_mean_t,
+                'mean_dist_n_post_mean_f': mean_dist_n_post_mean_f,
+                'squared_c_post_all': squared_c_post_all,
+                'squared_c_post_mean_t': squared_c_post_mean_t,
+                'squared_c_post_mean_f': squared_c_post_mean_f,
+                'squared_n_post_all': squared_n_post_all,
+                'squared_n_post_mean_t': squared_n_post_mean_t,
+                'squared_n_post_mean_f': squared_n_post_mean_f,
                 'mean_dist_c_map_all': mean_dist_c_map_all,
+                'mean_dist_c_map_mean_t': mean_dist_c_map_mean_t,
+                'mean_dist_c_map_mean_f': mean_dist_c_map_mean_f,
                 'mean_dist_n_map_all': mean_dist_n_map_all,
-                'avg_var_post_all': avg_var_post_all,
-                'avg_var_map_all': avg_var_map_all,
+                'mean_dist_n_map_mean_t': mean_dist_n_map_mean_t,
+                'mean_dist_n_map_mean_f': mean_dist_n_map_mean_f,
+                'squared_c_map_all': squared_c_map_all,
+                'squared_c_map_mean_t': squared_c_map_mean_t,
+                'squared_c_man_mean_f': squared_c_map_mean_f,
+                'squared_n_map_all': squared_n_map_all,
+                'squared_n_map_mean_t': squared_n_map_mean_t,
+                'squared_n_man_mean_f': squared_n_map_mean_f,
+                'avg_var_all': avg_var_all,
+                'avg_var_mean_t': avg_var_mean_t,
+                'avg_var_mean_f': avg_var_mean_f,
                 'obs': obs.numpy(),
                 'additional_param': additional_param.numpy() / 100
             })
             df_unique = df['obs'].unique()
+            # The same plots are generated for each different observed proportion
             for group in df_unique:
                 df_group = df[df['obs'] == group]
 
                 # Average distance to corresponding point across all samples
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_c_post_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (50 chains with 50000 '
                           f'samples each) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
@@ -724,11 +793,12 @@ class DataHandler:
                 # Average distance to the closest point across all samples
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_n_post_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains with 10000 '
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (50 chains with 50000 '
                           f'samples each) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
-                plt.ylabel(r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
+                plt.ylabel(
+                    r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
                 plt.ylim(0, 25)
                 plt.tight_layout()
                 filename = f'post_dist_clp_{group}.png'
@@ -736,11 +806,11 @@ class DataHandler:
                 plt.savefig(png_plot_file)
                 plt.close()
 
-                # Average distance to the corresponding point across the MAP estimates of all MCMC chains
+                # Average distance to the corresponding point across the MAP estimate of all MCMC runs
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_c_map_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
-                          f'selected for each one) with an observed portion of {group} per cent')
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (50 chains, MAP sample '
+                          f'selected) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
                 plt.ylabel(
@@ -753,14 +823,44 @@ class DataHandler:
                 plt.savefig(png_plot_file)
                 plt.close()
 
+                # Same plot as above but distinguish whether points were observed or not
+                df_melted = df.melt(id_vars=['additional_param'],
+                                    value_vars=['mean_dist_c_map_all', 'mean_dist_c_map_mean_t',
+                                                'mean_dist_c_map_mean_f'],
+                                    var_name='cat', value_name='value')
+                category_mapping = {
+                    'mean_dist_c_map_all': 'All points',
+                    'mean_dist_c_map_mean_t': 'Observed points',
+                    'mean_dist_c_map_mean_f': 'Reconstructed points'
+                }
+                df_melted['cat'] = df_melted['cat'].map(category_mapping)
+                df_melted = df_melted.dropna(subset=['value'])
+
+                plt.figure(figsize=(20, 10))
+
+                sns.boxplot(x='additional_param', y='value', hue='cat', data=df_melted)
+
+                plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
+                           r'$[\mathrm{mm}^{2}]$')
+                plt.ylabel(
+                    r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
+                    r'given\ correspondences)\ [\mathrm{mm}]$')
+                plt.ylim(0, 40)
+                plt.tight_layout()
+                filename = f'map_dist_corr_{group}_split.png'
+                png_plot_file = self.plot_dir / filename
+                plt.savefig(png_plot_file)
+                plt.close()
+
                 # Average distance to the closest point across the MAP estimates of all MCMC chains
                 plt.figure(figsize=(20, 10))
                 sns.boxplot(x='additional_param', y='mean_dist_n_map_all', data=df_group, color='skyblue')
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
-                          f'selected for each one) with an observed portion of {group} per cent')
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (50 chains, MAP sample '
+                          f'selected) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                            r'$[\mathrm{mm}^{2}]$')
-                plt.ylabel(r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
+                plt.ylabel(
+                    r'$Average\ distance\ to\ the\ closest\ point\ on\ the\ reconstructed\ surface\ [\mathrm{mm}]$')
                 plt.ylim(0, 25)
                 plt.tight_layout()
                 filename = f'map_dist_clp_{group}.png'
@@ -768,35 +868,41 @@ class DataHandler:
                 plt.savefig(png_plot_file)
                 plt.close()
 
-                # Distances to corresponding points / variances across the MAP estimates of all MCMC chains combined
+                # Squared distances to corresponding points / variances across the MAP estimates of all MCMC chains combined
                 fig, ax1 = plt.subplots(figsize=(20, 10))
                 mean_of_means_dist = df_group.groupby('additional_param')['mean_dist_c_map_all'].mean().reset_index()
-                ax1.scatter(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_map_all'], color='red',
-                            label='Distances (left)', s=100)
+                mean_dist_t = df_group.groupby('additional_param')['mean_dist_c_map_mean_t'].mean().reset_index()
+                mean_dist_f = df_group.groupby('additional_param')['mean_dist_c_map_mean_f'].mean().reset_index()
+                ax1.scatter(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_map_all'],
+                            color='red',
+                            label='Distances (all)', s=100)
+                ax1.scatter(mean_dist_t['additional_param'], mean_dist_t['mean_dist_c_map_mean_t'], color='darkred',
+                            label='Distances (observed)', s=100)
+                ax1.scatter(mean_dist_f['additional_param'], mean_dist_f['mean_dist_c_map_mean_f'], color='lightcoral',
+                            label='Distances (not observed)', s=100)
                 plt.plot(mean_of_means_dist['additional_param'], mean_of_means_dist['mean_dist_c_map_all'], color='red')
+                plt.plot(mean_of_means_dist['additional_param'], mean_dist_t['mean_dist_c_map_mean_t'], color='darkred')
+                plt.plot(mean_of_means_dist['additional_param'], mean_dist_f['mean_dist_c_map_mean_f'],
+                         color='lightcoral')
                 ax1.set_xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
                                r'$[\mathrm{mm}^{2}]$')
                 ax1.set_ylabel(
-                    r'$Average\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
-                    r'given\ correspondences)\ [\mathrm{mm}]$', color='red')
+                    r'$Average\ squared\ distance\ to\ the\ corresponding\ point\ on\ the\ reconstruction\ surface\ (utilising\ '
+                    r'given\ correspondences)\ [\mathrm{mm}^{2}]$', color='red')
                 ax1.set_ylim(0, 25)
+                ax1.legend(loc='upper left')
 
                 ax2 = ax1.twinx()
-                mean_of_means_var = df_group.groupby('additional_param')['avg_var_post_all'].mean().reset_index()
-                ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue',
+                mean_of_means_var = df_group.groupby('additional_param')['avg_var_all'].mean().reset_index()
+                ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_all'], color='blue',
                             label='Variances (right)', s=100)
-                plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_post_all'], color='blue')
+                plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_all'], color='blue')
                 ax2.set_ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$', color='blue')
                 ax2.set_ylim(0, 80)
-                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (10 chains, MAP sample '
-                          f'selected for each one) with an observed portion of {group} per cent')
+                plt.title(f'Femur reconstruction (LOOCV with N=10) using parallel MCMC sampling (50 chains, MAP sample '
+                          f'selected) with an observed portion of {group} per cent')
                 fig.tight_layout()
                 filename = f'combined_map_dist_corr_var_{group}.png'
                 png_plot_file = self.plot_dir / filename
                 plt.savefig(png_plot_file)
                 plt.close()
-
-
-
-
-
