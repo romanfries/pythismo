@@ -52,12 +52,12 @@ REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
 REL_PATH_MODEL = "datasets/femur-data/project-data/models"
 REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/distal-50-cot-reg"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/full-50-cot-reg"
 
 DISTAL_END = True
 
 BATCH_SIZE = 50
-CHAIN_LENGTH = 25000
+CHAIN_LENGTH = 55000
 DEFAULT_BURN_IN = 5000
 DECIMATION_TARGET = 200
 
@@ -109,11 +109,11 @@ def trial():
     # Test procedure with subsequent visualisation
     meshes, _ = read_meshes(REL_PATH_MESH_DECIMATED, DEVICE)
     # loo = torch.randint(0, len(meshes), (1,)).item()
-    loo = 5
+    loo = 0
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
     obs = 0.2
-    var_likelihood = 0.2
-    distal_end = False
+    var_likelihood = 1.0
+    distal_end = True
 
     var_mod_random = math.sqrt(var_likelihood) * VAR_MOD_RANDOM
     var_mod_informed = VAR_MOD_INFORMED
@@ -124,22 +124,36 @@ def trial():
     var_prior_rot = VAR_PRIOR_ROT
 
     target = meshes[loo]
+    # del meshes[loo]
+    # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+    #     torch.max(target.tensor_points, dim=0)[1][2].item()
+    # part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
+    # meshes.insert(0, part_target)
+    # ICPAnalyser(meshes).icp()
+    # del meshes[0]
+    # model = PointDistributionModel(meshes=meshes)
+    # shape = meshes[0]
     del meshes[loo]
-    z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-        torch.max(target.tensor_points, dim=0)[1][2].item()
-    part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
-    meshes.insert(0, part_target)
+    meshes.insert(0, target)
     ICPAnalyser(meshes).icp()
     del meshes[0]
     model = PointDistributionModel(meshes=meshes)
+    z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+        torch.max(target.tensor_points, dim=0)[1][2].item()
+    part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
     shape = meshes[0]
     # dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
     # observed = (dists < 1e-6).squeeze()
     batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
     starting_params = torch.randn((model.rank, BATCH_SIZE), device=DEVICE)
+    starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=DEVICE)
+    starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=DEVICE)
     shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
     batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
                                    model.get_points_from_parameters(starting_params))
+    batched_shape.apply_rotation(starting_rotation)
+    batched_shape.apply_translation(starting_translation)
+    starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
     # batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
 
     proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape, batched_target, model,
@@ -166,11 +180,13 @@ def trial():
         sampler.determine_quality(proposal_type)
         sampler.decide(proposal_type, target)
     proposal.close()
+    # batched_full_target = BatchTorchMesh(target, 'target', torch.device("cpu"), BATCH_SIZE)
 
     batched_shape.change_device(torch.device("cpu"))
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
     visualizer = MainVisualizer(batched_shape, model, sampler)
+    # visualizer = MainVisualizer(batched_full_target, model, sampler)
     acceptance_ratios = sampler.acceptance_ratio(torch.ones(BATCH_SIZE, dtype=torch.bool, device=DEVICE))
     print("Acceptance Ratios:")
     strings = ['Parameters', 'Random Noise', 'Translation', 'Rotation', 'Total']
@@ -217,26 +233,40 @@ def loocv():
         var_prior_trans = VAR_PRIOR_TRANS
         var_prior_rot = VAR_PRIOR_ROT
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
-            # for l_ in range(len(meshes)):
-            for l_ in range(10):
+            for l_ in range(25, len(meshes)):
+                # for l_ in range(10):
                 meshes_ = copy.deepcopy(meshes)
                 target = meshes_[l_]
+                # del meshes_[l_]
+                # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+                #     torch.max(target.tensor_points, dim=0)[1][2].item()
+                # part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
+                # meshes_.insert(0, part_target)
+                # ICPAnalyser(meshes_).icp()
+                # del meshes_[0]
+                # model = PointDistributionModel(meshes=meshes_)
+                # shape = meshes_[0]
                 del meshes_[l_]
-                z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-                    torch.max(target.tensor_points, dim=0)[1][2].item()
-                part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
-                meshes_.insert(0, part_target)
+                meshes_.insert(0, target)
                 ICPAnalyser(meshes_).icp()
                 del meshes_[0]
                 model = PointDistributionModel(meshes=meshes_)
+                z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+                    torch.max(target.tensor_points, dim=0)[1][2].item()
+                part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
                 shape = meshes_[0]
                 dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
                 observed = (dists < 1e-6).squeeze()
                 batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
                 starting_params = torch.randn((model.rank, BATCH_SIZE), device=DEVICE)
+                starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=DEVICE)
+                starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=DEVICE)
                 shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
                 batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
                                                model.get_points_from_parameters(starting_params))
+                batched_shape.apply_rotation(starting_rotation)
+                batched_shape.apply_translation(starting_translation)
+                starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
                 # batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
 
                 proposal = ClosestPointProposal(BATCH_SIZE, starting_params, DEVICE, batched_shape, batched_target,
@@ -280,7 +310,7 @@ def loocv():
                                                save_html=True)
                 mean_dist_c_map = torch.tensor(data['accuracy']['mean_dist_corr_map'])
                 handler.save_target_map_dist(target, mean_dist_c_map, l_, int(100 * percentage),
-                                              int(100 * var_likelihood), save_html=True)
+                                             int(100 * var_likelihood), save_html=True)
                 # Delete everything that is potentially located on the GPU
                 del analyser, batched_shape, batched_target, dists, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, target
                 torch.cuda.empty_cache()
@@ -333,9 +363,14 @@ def mcmc_task(gpu_id_, chunk_):
         observed = (dists < 1e-6).squeeze()
         batched_target = BatchTorchMesh(part_target, 'target', device_, BATCH_SIZE)
         starting_params = torch.randn((model.rank, BATCH_SIZE), device=device_)
+        starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=device_)
+        starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=device_)
         shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
-        batched_shape = BatchTorchMesh(shape, 'current_shapes', device_, BATCH_SIZE, True,
+        batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
                                        model.get_points_from_parameters(starting_params))
+        batched_shape.apply_rotation(starting_rotation)
+        batched_shape.apply_translation(starting_translation)
+        starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
         # batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE)
 
         proposal = ClosestPointProposal(BATCH_SIZE, starting_params, device_, batched_shape, batched_target, model,
@@ -394,6 +429,10 @@ if __name__ == "__main__":
             p = (Path.cwd().parent / Path(REL_PATH_MESH_DECIMATED)).glob('**/*')
             mesh_list = [f for f in p if f.is_file()]
             tasks = list(itertools.product(VAR_LIKELIHOOD_TERM, PERCENTAGES_OBSERVED_LENGTH, range(len(mesh_list))))
+            # tasks = [(a, b, c) for a, b, c in
+            #         itertools.product(VAR_LIKELIHOOD_TERM, PERCENTAGES_OBSERVED_LENGTH, range(len(mesh_list)))
+            #         if (b == 0.2 and (c + 2) % 4 == 0) or (b == 0.4 and (c + 1) % 4 == 0) or (
+            #         b == 0.6 and c % 4 == 0) or (b == 0.8 and (c + 3) % 4 == 0)]
             chunks = [tasks[i::NUM_GPUS] for i in range(NUM_GPUS)]
             processes = []
             for gpu_id, chunk in zip(GPU_IDENTIFIERS, chunks):

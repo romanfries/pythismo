@@ -203,11 +203,20 @@ class PDMMetropolisSampler:
 
         # PyTorch3D function leaves all diagonal elements at 0.
         # TODO: Only calculate the graph laplacian once as it doesn't change.
+        # dists, idx, knn = pytorch3d.ops.ball_query(self.target_points[:, :, 0].unsqueeze(-1).permute(2, 0, 1),
+        #                                           self.target_points[:, :, 0].unsqueeze(-1).permute(2, 0, 1),
+        #                                           K=self.target.num_points, radius=30.0)
+        # dists, idx = dists[0, :, :], idx[0, :, :]
+        # rows = torch.arange(dists.size(0), device=self.dev).unsqueeze(1).expand_as(dists)
+        # idx[idx == -1] = rows[idx == -1]
+        # graph_laplacian = torch.zeros((self.target.num_points, self.target.num_points), device=self.dev).scatter_(1, idx, dists)
+        # graph_laplacian = torch.where(graph_laplacian > 0, -torch.exp(-graph_laplacian / 900.0), graph_laplacian)
+
         # target_meshes = self.target.to_pytorch3d_meshes()
         # edges = target_meshes.edges_packed()[
-        #        target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
+        #         target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
         graph_laplacian = -pytorch3d.ops.cot_laplacian(self.target_points[:, :, 0], self.target.cells[0].data)[
-           0].to_dense()
+             0].to_dense()
         # graph_laplacian = -pytorch3d.ops.norm_laplacian(self.target_points[:, :, 0], edges).to_dense()
         sums = -graph_laplacian.sum(dim=1)
         D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))

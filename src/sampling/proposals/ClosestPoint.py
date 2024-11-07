@@ -186,9 +186,8 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         recalculated.
         :type recalculation_period: int
         """
-        super().__init__(batch_size, starting_parameters[:, 0], dev, var_mod_random, var_trans, var_rot, prob_mod_random,
+        super().__init__(batch_size, starting_parameters, dev, var_mod_random, var_trans, var_rot, prob_mod_random,
                          prob_trans, prob_rot)
-        self.parameters = starting_parameters
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.old_posterior_parameters = None
         self.single_shape = TorchMeshGpu(

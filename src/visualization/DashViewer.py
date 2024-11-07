@@ -375,7 +375,7 @@ class PosteriorVisualizer:
 
 class MainVisualizer:
     def __init__(self, mesh, model, sampler):
-        self.app = dash.Dash(__name__, suppress_callback_exceptions=True)
+        self.app = dash.Dash(__name__, suppress_callback_exceptions=False)
         self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
         self.model_visualizer = ModelVisualizer(self.app, model, mesh)
         self.chain_visualizer = ChainVisualizer(self.app, sampler)

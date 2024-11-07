@@ -51,10 +51,10 @@ class GaussianRandomWalkProposal:
         self.batch_size = batch_size
         self.dev = dev
         self.ratio_trans_prob = torch.ones(self.batch_size, device=self.dev)
-        self.parameters = starting_parameters.unsqueeze(1).expand(-1, self.batch_size).to(self.dev)
+        self.parameters = starting_parameters[:-6, :].to(self.dev)
+        self.translation = starting_parameters[-6:-3, :].to(self.dev)
+        self.rotation = starting_parameters[-3:, :].to(self.dev)
         self.num_parameters = self.parameters.size()[0]
-        self.translation = torch.zeros((3, self.batch_size), device=self.dev)
-        self.rotation = torch.zeros((3, self.batch_size), device=self.dev)
         self.var_mod = var_mod
         self.var_trans = var_trans
         self.var_rot = var_rot

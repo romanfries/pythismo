@@ -74,13 +74,13 @@ class TorchMeshGpu(Mesh):
         # If the condition is met, the constructor was called from the ‘BatchTorchMesh’ subclass. Therefore, the warning
         # can be ignored.
         if isinstance(self.points, np.ndarray) and np.array_equal(self.points, np.array(None, dtype=object)):
-            self.tensor_points = mesh.tensor_points
+            self.tensor_points = mesh.tensor_points.to(self.dev)
         else:
             self.tensor_points = torch.tensor(self.points, dtype=torch.float32, device=self.dev)
         self.points = None
         # Avoid constructing a new Torch tensor from an existing tensor.
         if isinstance(self.cells[0].data, torch.Tensor):
-            self.cells[0].data.to(self.dev)
+            self.cells[0].data = self.cells[0].data.to(self.dev)
         else:
             self.cells[0].data = torch.tensor(self.cells[0].data, device=self.dev)
         self.num_points = self.tensor_points.size()[0]
