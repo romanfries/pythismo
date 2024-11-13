@@ -416,3 +416,18 @@ class MainVisualizer:
 
     def run(self):
         self.app.run_server(debug=False)
+
+
+class VisualizerLight:
+    def __init__(self, mesh):
+        self.app = dash.Dash(__name__, suppress_callback_exceptions=False)
+        self.mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
+        self.setup_layout()
+
+    def setup_layout(self):
+        self.app.layout = self.mesh_visualizer.layout
+
+    def run(self):
+        self.app.run_server(debug=False)
+
+

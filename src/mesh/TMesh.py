@@ -10,7 +10,7 @@ import pytorch3d
 from simplify import simplify_mesh
 
 
-def get_transformation_matrix(angles: torch.Tensor, batched_input=False) -> torch.Tensor:
+def get_transformation_matrix_from_euler_angles(angles: torch.Tensor, batched_input=False) -> torch.Tensor:
     """
     Generates suitable transformation matrices for given Euler angles (ZYX convention).
 
@@ -49,6 +49,13 @@ def get_transformation_matrix(angles: torch.Tensor, batched_input=False) -> torc
     return transformation_matrices
 
 
+def get_transformation_matrix_from_rot_and_trans(rotations, translations):
+    batch_size = rotations.size(2)
+    transformations = torch.eye(4, device=rotations.device).unsqueeze(-1).expand(4, 4, batch_size).clone()
+    transformations[:3, :3, :], transformations[:3, 3, :] = rotations.transpose(0, 1), translations
+    return transformations
+
+
 class TorchMeshGpu(Mesh):
     def __init__(self, mesh, identifier, dev):
         """
@@ -63,10 +70,15 @@ class TorchMeshGpu(Mesh):
         :param dev: An object representing the device on which the tensor operations are or will be allocated.
         :type dev: torch.device
         """
+        # TODO: There are many operations that don't allow the adjustment of the facet normals, e.g., mesh
+        #  simplification and mesh slicing. (They are deleted instead.)
+        # TODO: Only the 'set_points' method allows adjustment of the rotation centre. Add this possibility for
+        #  'apply_transmation', 'apply_rotation' and 'apply_translation'.
         # possibly prone to errors
-        arg_dict = vars(mesh)
+        copy = mesh.copy()
+        arg_dict = vars(copy)
         arg_dict = {key: value for key, value in arg_dict.items() if key not in {'tensor_points', 'id', 'num_points',
-                                                                                 'dimensionality', 'initial_com',
+                                                                                 'dimensionality', 'initial_com', 'rotation_centre',
                                                                                  'dev', 'calculated_facet_normals'}}
         args = list(arg_dict.values())
         super().__init__(*args)
@@ -74,7 +86,7 @@ class TorchMeshGpu(Mesh):
         # If the condition is met, the constructor was called from the ‘BatchTorchMesh’ subclass. Therefore, the warning
         # can be ignored.
         if isinstance(self.points, np.ndarray) and np.array_equal(self.points, np.array(None, dtype=object)):
-            self.tensor_points = mesh.tensor_points.to(self.dev)
+            self.tensor_points = copy.tensor_points.to(self.dev)
         else:
             self.tensor_points = torch.tensor(self.points, dtype=torch.float32, device=self.dev)
         self.points = None
@@ -87,7 +99,14 @@ class TorchMeshGpu(Mesh):
         self.dimensionality = self.tensor_points.size()[1]
         self.id = identifier
         self.initial_com = self.center_of_mass()
-        self.calculated_facet_normals = False
+        self.rotation_centre = self.initial_com
+        if "facet_normals" in self.cell_data:
+            self.calculated_facet_normals = True
+            if isinstance(self.cell_data['facet_normals'][0], np.ndarray):
+                self.cell_data.update({"facet_normals": [
+                    torch.as_tensor(self.cell_data['facet_normals'][0], dtype=torch.float32, device=self.dev)]})
+        else:
+            self.calculated_facet_normals = False
 
     @property
     def cells_dict(self):
@@ -193,7 +212,7 @@ class TorchMeshGpu(Mesh):
                                [meshio.CellBlock('triangle', tri_dec.faces.astype(np.int64))])
         return self.from_mesh(new_mesh, self.id, self.dev)
 
-    def set_points(self, transformed_points, reset_com=False):
+    def set_points(self, transformed_points, adjust_rotation_centre=False, calc_facet_normals=False):
         """
         The method for changing the points of the mesh. The cells (triangles) remain unchanged.
 
@@ -205,8 +224,15 @@ class TorchMeshGpu(Mesh):
         """
         # transformed_points: Torch tensor
         self.tensor_points = transformed_points
-        if reset_com:
-            self.initial_com = self.center_of_mass()
+        self.initial_com = self.center_of_mass()
+        if adjust_rotation_centre:
+            self.adjust_rotation_centre()
+        if calc_facet_normals:
+            self.calculated_facet_normals = True
+            self.calc_facet_normals()
+        else:
+            self.calculated_facet_normals = False
+            self.cell_data.pop('facet_normals', None)
 
     def apply_transformation(self, transform: torch.Tensor):
         """
@@ -238,10 +264,10 @@ class TorchMeshGpu(Mesh):
         :param rotation_parameters: Torch tensor with shape (3,) containing the Euler angles (in radians).
         :type rotation_parameters: torch.Tensor
         """
-        transformation = get_transformation_matrix(rotation_parameters)
-        self.apply_translation(- self.initial_com)
+        transformation = get_transformation_matrix_from_euler_angles(rotation_parameters)
+        self.apply_translation(- self.rotation_centre)
         self.apply_transformation(transformation)
-        self.apply_translation(self.initial_com)
+        self.apply_translation(self.rotation_centre)
 
     def center_of_mass(self):
         """
@@ -251,6 +277,12 @@ class TorchMeshGpu(Mesh):
         :rtype: torch.Tensor
         """
         return torch.sum(self.tensor_points, dim=0) / self.num_points
+
+    def adjust_rotation_centre(self):
+        self.rotation_centre = self.initial_com
+
+    def set_rotation_centre(self, rotation_centre):
+        self.rotation_centre = rotation_centre
 
     def to_pytorch3d_pointclouds(self, batch_size=1):
         """
@@ -309,6 +341,7 @@ class TorchMeshGpu(Mesh):
             self.tensor_points = self.tensor_points.to(dev)
             self.cells[0].data = self.cells[0].data.to(dev)
             self.initial_com = self.initial_com.to(dev)
+            self.rotation_centre = self.rotation_centre.to(dev)
             if self.calculated_facet_normals:
                 self.cell_data["facet_normals"][0].data = self.cell_data["facet_normals"][0].data.to(dev)
 
@@ -347,6 +380,7 @@ class TorchMeshGpu(Mesh):
             plane_origin = (self.tensor_points[idx1, :] + (1.0 - ratio_observed) * plane_normal)
         mesh_tri = Trimesh(self.tensor_points.cpu(), self.cells[0].data.cpu()).slice_plane(plane_origin.cpu(),
                                                                                            plane_normal.cpu())
+        mesh_tri = mesh_tri.process(validate=True)
 
         return TorchMeshGpu(
             meshio.Mesh(np.array(mesh_tri.vertices), [meshio.CellBlock('triangle', np.array(mesh_tri.faces))]),
@@ -377,6 +411,12 @@ class BatchTorchMesh(TorchMeshGpu):
         :type batched_points: torch.Tensor
         """
         # possibly prone to errors
+        if "facet_normals" in mesh.cell_data:
+            calculated_facet_normals = True
+            mesh.cell_data.pop('facet_normals', None)
+        else:
+            calculated_facet_normals = False
+            self.calculated_facet_normals = False
         super().__init__(mesh, identifier, dev)
         if not batched_data:
             self.tensor_points = self.tensor_points.unsqueeze(2).expand(-1, -1, batch_size)
@@ -387,6 +427,11 @@ class BatchTorchMesh(TorchMeshGpu):
             self.batch_size = self.tensor_points.size()[2]
         self.old_points = None
         self.initial_com = self.center_of_mass()
+        self.rotation_centre = self.initial_com
+        if calculated_facet_normals:
+            self.calculated_facet_normals = True
+            mesh.calc_facet_normals()
+            self.calc_facet_normals()
 
     @classmethod
     def from_mesh(cls, mesh, identifier, dev, batch_size=50):
@@ -415,7 +460,7 @@ class BatchTorchMesh(TorchMeshGpu):
         warnings.warn("Warning: TorchMeshGpu method invoked from BatchTorchMesh instance. No action taken.",
                       UserWarning)
 
-    def set_points(self, transformed_points, save_old=False, reset_com=False):
+    def set_points(self, transformed_points, save_old=False, adjust_rotation_centre=False, calc_facet_normals=False):
         """
         The method for changing the points of the mesh. The cells (triangles) remain unchanged.
 
@@ -432,8 +477,14 @@ class BatchTorchMesh(TorchMeshGpu):
         else:
             self.old_points = None
         self.tensor_points = transformed_points
-        if reset_com:
-            self.initial_com = self.center_of_mass()
+        self.initial_com = self.center_of_mass()
+        if adjust_rotation_centre:
+            self.adjust_rotation_centre()
+        if calc_facet_normals:
+            self.calc_facet_normals()
+        else:
+            self.calculated_facet_normals = False
+            self.cell_data.pop('facet_normals', None)
 
     def apply_transformation(self, transform, save_old=False):
         """
@@ -488,10 +539,10 @@ class BatchTorchMesh(TorchMeshGpu):
         does not offer the option of saving the old coordinates.
         :type save_old: bool
         """
-        transformation = get_transformation_matrix(rotation_parameters, batched_input=True)
-        self.apply_translation(- self.initial_com, save_old)
+        transformation = get_transformation_matrix_from_euler_angles(rotation_parameters, batched_input=True)
+        self.apply_translation(- self.rotation_centre, save_old)
         self.apply_transformation(transformation)
-        self.apply_translation(self.initial_com)
+        self.apply_translation(self.rotation_centre)
 
     def update_points(self, decider):
         """

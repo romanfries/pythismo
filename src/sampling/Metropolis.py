@@ -1,3 +1,4 @@
+import copy
 import math
 import warnings
 
@@ -5,8 +6,13 @@ import torch
 
 import pytorch3d.ops
 from pytorch3d.loss.point_mesh_distance import point_face_distance
+import point_cloud_utils as pcu
 
+from src.mesh.TMesh import get_transformation_matrix_from_rot_and_trans
+from src.model import PointDistributionModel
+from src.registration import ProcrustesAnalyser, ICPAnalyser
 from src.sampling.proposals import ParameterProposalType
+from src.sampling.proposals.ClosestPoint import extract_bounds_verts, is_point_on_line_segment
 
 
 def unnormalised_log_posterior(distances, inv_cov_operator, parameters, translation, rotation, gamma, sigma_lm,
@@ -125,8 +131,47 @@ def unnormalised_log_posterior_curvature(distances, inv_cov_operator, parameters
     return log_likelihoods + log_prior + log_translation + log_rotation
 
 
+def get_laplacian(type, verts, faces, edges, alpha, beta, dev):
+    size = verts.size(0)
+    identity = torch.diag(torch.ones(size, device=dev))
+    if type == "none":
+        return identity, torch.ones(size, device=dev), - (size / 2) * torch.log(torch.tensor(2 * torch.pi, device=dev))
+    if type == "std" or type == "base" or type == "uniform":
+        graph_laplacian = pytorch3d.ops.laplacian(verts, edges).to_dense()
+        degree = (graph_laplacian.abs() > 0.0).sum(-1) - 1
+        degree = torch.clamp(degree, min=1)
+        graph_laplacian *= degree[:, None]
+        graph_laplacian = -torch.pow(degree, -0.5)[None, :] * graph_laplacian * torch.pow(degree, -0.5)[:, None]
+    if type == "cot":
+        graph_laplacian = -pytorch3d.ops.cot_laplacian(verts, faces)[0].to_dense()
+        sums = -graph_laplacian.sum(dim=1)
+        D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
+        graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
+        graph_laplacian = D @ graph_laplacian @ D
+    if type == "norm":
+        graph_laplacian = -pytorch3d.ops.norm_laplacian(verts, edges).to_dense()
+        sums = -graph_laplacian.sum(dim=1)
+        D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
+        graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
+        graph_laplacian = D @ graph_laplacian @ D
+    if type == "eps":
+        dists, idx, knn = pytorch3d.ops.ball_query(verts.unsqueeze(-1).permute(2, 0, 1),
+                                                   verts.unsqueeze(-1).permute(2, 0, 1), K=size, radius=20.0)
+        dists, idx = dists[0, :, :], idx[0, :, :]
+        rows = torch.arange(dists.size(0), device=dev).unsqueeze(1).expand_as(dists)
+        idx[idx == -1] = rows[idx == -1]
+        graph_laplacian = torch.zeros((size, size), device=dev).scatter_(1, idx, dists)
+        graph_laplacian = torch.where(graph_laplacian > 0, -torch.exp(-graph_laplacian / 900.0), graph_laplacian)
+
+    prec = torch.matrix_power((identity + beta * graph_laplacian), alpha)
+    eigvals = (1.0 / (torch.pow(1 + beta * torch.linalg.eigh(graph_laplacian + 1e-6 * identity)[0], alpha) + 1e-6))
+    prec *= eigvals.mean()
+    det = -0.5 * torch.log(eigvals / eigvals.mean() + 1e-6).sum(-1) - (size / 2) * torch.log(torch.tensor(2 * torch.pi, device=dev))
+    return prec, eigvals, det
+
+
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, correspondences=True, gamma=50.0, var_like=1.0,
+    def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, correspondences=True, gamma=50.0, var_like=1.0,
                  var_prior_mod=1.0, uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005,
                  save_full_mesh_chain=False, save_residuals=False):
         """
@@ -202,7 +247,6 @@ class PDMMetropolisSampler:
         # self.mean_curv = mean_curv.permute(1, 0)
 
         # PyTorch3D function leaves all diagonal elements at 0.
-        # TODO: Only calculate the graph laplacian once as it doesn't change.
         # dists, idx, knn = pytorch3d.ops.ball_query(self.target_points[:, :, 0].unsqueeze(-1).permute(2, 0, 1),
         #                                           self.target_points[:, :, 0].unsqueeze(-1).permute(2, 0, 1),
         #                                           K=self.target.num_points, radius=30.0)
@@ -212,19 +256,13 @@ class PDMMetropolisSampler:
         # graph_laplacian = torch.zeros((self.target.num_points, self.target.num_points), device=self.dev).scatter_(1, idx, dists)
         # graph_laplacian = torch.where(graph_laplacian > 0, -torch.exp(-graph_laplacian / 900.0), graph_laplacian)
 
-        # target_meshes = self.target.to_pytorch3d_meshes()
-        # edges = target_meshes.edges_packed()[
-        #         target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
-        graph_laplacian = -pytorch3d.ops.cot_laplacian(self.target_points[:, :, 0], self.target.cells[0].data)[
-             0].to_dense()
-        # graph_laplacian = -pytorch3d.ops.norm_laplacian(self.target_points[:, :, 0], edges).to_dense()
-        sums = -graph_laplacian.sum(dim=1)
-        D = torch.diag(torch.where(sums > 0, 1.0 / torch.sqrt(sums), torch.zeros_like(sums)))
-        graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = sums
-        graph_laplacian = D @ graph_laplacian @ D
-        identity = torch.diag(torch.ones(self.target_points.size(0), device=self.dev))
-        self.inv_cov_operator = 0.1 * identity + 0.3 * graph_laplacian
-        # self.inv_cov_operator = identity
+        target_meshes = self.target.to_pytorch3d_meshes()
+        edges = target_meshes.edges_packed()[
+                target_meshes.mesh_to_edges_packed_first_idx()[0]:target_meshes.mesh_to_edges_packed_first_idx()[1], :]
+        self.laplacian_type = laplacian_type
+        self.alpha = alpha
+        self.beta = beta
+        self.inv_cov_operator, eigvals, det = get_laplacian(self.laplacian_type, self.target_points[:, :, 0], self.target.cells[0].data, edges, self.alpha, self.beta, self.dev)
 
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL_RANDOM)
@@ -295,8 +333,8 @@ class PDMMetropolisSampler:
         self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
         if self.correspondences:
-            # Does not support partial targets. The number of points of the current mesh instances and the target must
-            # be identical (equal to the full number of model points N).
+            # TODO: Does not support partial targets. The number of points of the current mesh instances and the target
+            #  must be identical (equal to the full number of model points N).
             differences = torch.sub(self.points, self.target_points)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.inv_cov_operator, self.proposal.parameters,
@@ -377,16 +415,16 @@ class PDMMetropolisSampler:
 
         if parameter_proposal_type == ParameterProposalType.MODEL_INFORMED:
             self.accepted_par += decider
-            self.rejected_par += ~(decider)
+            self.rejected_par += ~decider
         elif parameter_proposal_type == ParameterProposalType.MODEL_RANDOM:
             self.accepted_rnd += decider
-            self.rejected_rnd += ~(decider)
+            self.rejected_rnd += ~decider
         elif parameter_proposal_type == ParameterProposalType.TRANSLATION:
             self.accepted_trans += decider
-            self.rejected_trans += ~(decider)
+            self.rejected_trans += ~decider
         else:
             self.accepted_rot += decider
-            self.rejected_rot += ~(decider)
+            self.rejected_rot += ~decider
 
     def get_residual(self, full_target):
         """
@@ -498,3 +536,54 @@ class PDMMetropolisSampler:
             return {'res_corr': self.residuals_c, 'res_clp': self.residuals_n}
         else:
             warnings.warn("Warning: Chains and residuals were not saved.", UserWarning)
+
+
+def create_target_aware_model(meshes, dev, target, part_target):
+    gpa = ProcrustesAnalyser(meshes)
+    gpa.generalised_procrustes_alignment()
+    mean_shape = meshes[0].copy()
+    mean_shape.set_points(torch.mean(gpa.points, dim=0), adjust_rotation_centre=True)
+    icp = ICPAnalyser([part_target, mean_shape])
+    icp.icp(swap_transformation=True)
+    target.set_points((torch.matmul(target.tensor_points, icp.transformation[0]) + icp.transformation[1].unsqueeze(1)).squeeze(), adjust_rotation_centre=True)
+
+    # Estimate the correspondences
+    cloud_cpu = mean_shape.tensor_points.cpu().numpy()
+    mesh_cpu = part_target.tensor_points.cpu().numpy()
+    mesh_faces = part_target.cells[0].data.cpu().numpy()
+    dists, fid, bc = pcu.closest_points_on_mesh(cloud_cpu, mesh_cpu, mesh_faces)
+    closest_pts = pcu.interpolate_barycentric_coords(mesh_faces, fid, bc, mesh_cpu)
+
+    # Remove wrong correspondences by detecting the nearest points located on the mesh boundary
+    # boundary_edges = trimesh.base.Trimesh(mesh_cpu, mesh_faces, process=True, validate=True).outline().vertex_nodes
+    boundary_edges = extract_bounds_verts(part_target.cells[0].data, extract_edges=True)
+    observed = ~(is_point_on_line_segment(torch.tensor(closest_pts, device=dev), torch.tensor(mesh_cpu, device=dev)[boundary_edges], tol=1e-2))
+
+    # Align all meshes using the observed points
+    meshes_observed_verts = copy.deepcopy(meshes)
+    _ = list(map(lambda x, y: x.set_points(y.tensor_points[observed, :]), meshes_observed_verts, meshes))
+    target_corresponding_verts = part_target.copy()
+    target_corresponding_verts.set_points(torch.tensor(closest_pts, device=dev)[observed])
+    meshes_observed_verts.insert(0, target_corresponding_verts)
+
+    gpa_target = ProcrustesAnalyser(meshes_observed_verts)
+    gpa_target.generalised_procrustes_alignment()
+    # Apply the found transformations to all full meshes
+    transformations = get_transformation_matrix_from_rot_and_trans(gpa_target.transformation[0].permute(1, 2, 0), gpa_target.transformation[1].permute(1, 0))
+    meshes.insert(0, part_target)
+    _ = list(map(lambda x, y: x.apply_transformation(y), meshes, transformations.permute(2, 0, 1)))
+    target.apply_transformation(transformations.permute(2, 0, 1)[0])
+    del meshes[0]
+
+    model = PointDistributionModel(meshes=meshes)
+    return model
+
+
+def create_target_unaware_model(meshes, target):
+    ProcrustesAnalyser(meshes).generalised_procrustes_alignment()
+    model = PointDistributionModel(meshes=meshes)
+    mean_shape = meshes[0].copy()
+    mean_shape.set_points(model.get_mean_points(), adjust_rotation_centre=True)
+    ICPAnalyser([target, mean_shape]).icp()
+    model.mean = mean_shape.tensor_points.reshape(3 * model.num_points, 1)
+    return model

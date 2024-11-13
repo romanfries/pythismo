@@ -4,15 +4,17 @@ import warnings
 import meshio
 import torch
 from torch.autograd.function import once_differentiable
+
 from pytorch3d import _C
 from pytorch3d.loss.point_mesh_distance import _PointFaceDistance, point_face_distance
+import point_cloud_utils as pcu
 
 from src.mesh import BatchTorchMesh, TorchMeshGpu
 from src.model import PointDistributionModel, BatchedPointDistributionModel
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 
 
-def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
+def is_point_on_line_segment(points, boundary_vertices, tol=1e-2):
     """
     Checks if given points are on one of some line segments defined by a set of interconnected boundary vertices.
     This method can be used to test whether determined closest points are located on the border of the (partial,
@@ -31,24 +33,20 @@ def is_point_on_line_segment(points, boundary_vertices, tol=1e-6):
     boundary_1, boundary_2 = boundary_1.unsqueeze(0).unsqueeze(2), boundary_2.unsqueeze(0).unsqueeze(2)
     points = points.unsqueeze(1).unsqueeze(1)
 
-    line = boundary_2 - boundary_1
+    line = (boundary_2 - boundary_1)
+    line_norm = line / torch.sqrt(torch.sum(torch.square(line), dim=-1, keepdim=True))
     vector = points - boundary_1
 
     # 1: Check if the points are collinear with the line segment
-    cross = torch.cross(line, vector, dim=-1)
-    res_1 = torch.linalg.norm(cross, dim=-1) > tol
+    res_1 = torch.linalg.norm(torch.cross(line_norm, vector, dim=-1), dim=-1) < tol
 
     # 2: Check if the points are within the bounds of the segment
-    dot = torch.sum(vector * line, dim=-1)
-    res_2 = dot < 0
+    res_2 = (0 <= torch.sum(vector * line, dim=-1)) & (torch.sum(vector * line, dim=-1) <= torch.sum(line * line, dim=-1))
 
-    line_norm = torch.sum(line * line, dim=-1)
-    res_3 = dot > line_norm
-
-    return torch.any(~(res_1 | res_2 | res_3), dim=1).squeeze()
+    return torch.any(res_1 & res_2, dim=1).squeeze()
 
 
-def extract_bounds_verts(triangular_cells):
+def extract_bounds_verts(triangular_cells, extract_edges=False):
     """
     Extract the boundary vertices from a triangular mesh defined by face indices.
 
@@ -61,6 +59,8 @@ def extract_bounds_verts(triangular_cells):
     target_edges = torch.cat([triangular_cells[:, [0, 1]], triangular_cells[:, [1, 2]], triangular_cells[:, [2, 0]]],
                              dim=0)
     target_edges, counts = torch.unique(torch.sort(target_edges, dim=1)[0], dim=0, return_counts=True)
+    if extract_edges:
+        return target_edges[counts == 1]
     return torch.unique(target_edges[counts == 1])
 
 
@@ -190,13 +190,14 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
                          prob_trans, prob_rot)
         self.posterior_parameters = torch.zeros(model.rank, 1, device=self.dev).repeat(1, self.batch_size)
         self.old_posterior_parameters = None
+        # Rotation centre of these meshes is not the same as the rotation centre of the actual meshes
         self.single_shape = TorchMeshGpu(
             meshio.Mesh(np.zeros((batched_shape.num_points, 3)), batched_shape.cells), 'single_shape', self.dev)
-        self.single_shape.set_points(batched_shape.tensor_points[:, :, 0].squeeze(), reset_com=True)
+        self.single_shape.set_points(batched_shape.tensor_points[:, :, 0].squeeze(), adjust_rotation_centre=True)
         self.batched_shapes = batched_shape
         self.single_target = TorchMeshGpu(
             meshio.Mesh(np.zeros((batched_target.num_points, 3)), batched_target.cells), 'single_target', self.dev)
-        self.single_target.set_points(batched_target.tensor_points[:, :, 0].squeeze(), reset_com=True)
+        self.single_target.set_points(batched_target.tensor_points[:, :, 0].squeeze(), adjust_rotation_centre=True)
         self.batched_targets = batched_target
         self.partial_target = self.batched_targets.num_points < self.batched_shapes.num_points
 
@@ -247,36 +248,47 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         #                               dtype=torch.int64)
 
         # 2: For every point s_i, i \in [0, ..., m] find the closest point c_i on the target \Gamma_T.
-        # Alternative calculation using Pytorch3d, which directly returns the squared distance to the next point c_i on
-        # \Gamma_T and the index of the triangle on which this point lies.
-        reference_cloud = self.single_shape.to_pytorch3d_pointclouds()
+        # Old approach: Alternative calculation using Pytorch3d, which directly returns the squared distance to the next
+        # point c_i on \Gamma_T and the index of the triangle on which this point lies.
+
+        # reference_cloud = self.single_shape.to_pytorch3d_pointclouds()
         # reference_mesh = self.single_shape.to_pytorch3d_meshes()
         target_mesh = self.single_target.to_pytorch3d_meshes()
 
-        verts_packed = target_mesh.verts_packed()
-        faces_packed = target_mesh.faces_packed()
-        tris = verts_packed[faces_packed]  # (T, 3, 3)
-        tris_first_idx = target_mesh.mesh_to_faces_packed_first_idx()
+        # verts_packed = target_mesh.verts_packed()
+        # faces_packed = target_mesh.faces_packed()
+        # tris = verts_packed[faces_packed]  # (T, 3, 3)
+        # tris_first_idx = target_mesh.mesh_to_faces_packed_first_idx()
 
-        points = reference_cloud.points_packed()  # (P, 3)
-        points_first_idx = reference_cloud.cloud_to_packed_first_idx()
-        max_points = reference_cloud.num_points_per_cloud().max().item()
+        # points = reference_cloud.points_packed()  # (P, 3)
+        # points_first_idx = reference_cloud.cloud_to_packed_first_idx()
+        # max_points = reference_cloud.num_points_per_cloud().max().item()
 
         # point to face squared distance: shape (P,)
         # requires dtype=torch.float32
-        point_to_face, triangle_idx = point_face_distance(points.float(), points_first_idx, tris.float(),
-                                                          tris_first_idx, max_points)
+        # point_to_face, triangle_idx = point_face_distance(points.float(), points_first_idx, tris.float(),
+        #                                                   tris_first_idx, max_points)
         # All points from the reference are mapped to the closest point of the target, even when they are not observed.
         # To counter this, all predicted correspondences, where the predicted target point is part of a triangle at the
         # target surface's boundary, are removed.
         on_boundary = torch.zeros(m, dtype=torch.bool, device=self.dev)
 
+        # Estimate the correspondences
+        cloud_cpu = self.single_shape.tensor_points.cpu().numpy()
+        mesh_cpu = self.single_target.tensor_points.cpu().numpy()
+        mesh_faces = self.single_target.cells[0].data.cpu().numpy()
+        dists, triangle_idx, bc = pcu.closest_points_on_mesh(cloud_cpu, np.asfortranarray(mesh_cpu), mesh_faces)
+        closest_pts = pcu.interpolate_barycentric_coords(mesh_faces, triangle_idx, bc, mesh_cpu)
+
         if self.partial_target:
             target_cells = self.single_target.cells[0].data
-            boundary_verts = extract_bounds_verts(target_cells)
-            boundary_mask = (target_cells.unsqueeze(1) == boundary_verts.unsqueeze(0).unsqueeze(-1))
-            boundary_tris = boundary_mask.any(-1).any(-1).nonzero(as_tuple=True)[0]
-            on_boundary = torch.isin(triangle_idx, boundary_tris)
+            # boundary_verts = extract_bounds_verts(target_cells)
+            # boundary_mask = (target_cells.unsqueeze(1) == boundary_verts.unsqueeze(0).unsqueeze(-1))
+            # boundary_tris = boundary_mask.any(-1).any(-1).nonzero(as_tuple=True)[0]
+            # on_boundary = torch.isin(triangle_idx, boundary_tris)
+            boundary_edges = extract_bounds_verts(target_cells, extract_edges=True)
+            on_boundary = is_point_on_line_segment(torch.tensor(closest_pts, device=self.dev),
+                                                   torch.tensor(mesh_cpu, device=self.dev)[boundary_edges], tol=1e-2)
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16.
@@ -372,6 +384,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
                                                                        self.posterior_parameters) + self.mean_correction
                                                           - self.parameters)
             # Attempt to determine the transition probabilities for the case of an asymmetrical proposal distribution
+            # (bugged)
             # trans_prob = unnormalised_log_gaussian_pdf(perturbations)
             # proposed_points = self.posterior_model.get_points_from_parameters(self.posterior_parameters)
             # rev_mean_correction = (self.prior_projection @ (proposed_points.reshape(-1, self.batch_size) -

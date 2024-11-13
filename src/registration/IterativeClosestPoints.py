@@ -100,8 +100,9 @@ class ICPAnalyser:
             self.target = targets
         else:
             raise ValueError("Invalid mode. Use ICPMode.SINGLE or ICPMode.BATCHED.")
+        self.transformation = None
 
-    def icp(self):
+    def icp(self, swap_transformation=False, calc_facet_normals=False):
         """
         Method that must be called to execute the alignment. After the call, `reference` will contain
         the transformed point clouds/meshes.
@@ -113,9 +114,22 @@ class ICPAnalyser:
             target_points = target_points.unsqueeze(0).expand(reference_points.size()[0], -1, -1)
             icp_solution = pytorch3d.ops.iterative_closest_point(target_points, reference_points,
                                                                  max_iterations=self.iterations)
-            transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1),
-                                              torch.linalg.inv(icp_solution.RTs.R))
-            _ = list(map(lambda x, y: x.set_points(y, reset_com=True), self.reference, transformed_points))
+            if not swap_transformation:
+                transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1),
+                                                  torch.linalg.inv(icp_solution.RTs.R))
+                if calc_facet_normals:
+                    _ = list(map(lambda x, y: x.set_points(y, adjust_rotation_centre=True), self.reference, transformed_points))
+                else:
+                    _ = list(map(lambda x, y: x.set_points(y, adjust_rotation_centre=True, calc_facet_normals=False), self.reference, transformed_points))
+                self.transformation = torch.linalg.inv(icp_solution.RTs.R), -(icp_solution.RTs.T.unsqueeze(-2) @ icp_solution.RTs.R).squeeze(1)
+            else:
+                # Make sure there is only a single mesh in the list reference!
+                transformed_points = torch.matmul(target_points, icp_solution.RTs.R) + icp_solution.RTs.T.unsqueeze(1)
+                if calc_facet_normals:
+                    self.target.set_points(transformed_points.squeeze(), adjust_rotation_centre=True)
+                else:
+                    self.target.set_points(transformed_points.squeeze(), adjust_rotation_centre=True, calc_facet_normals=False)
+                self.transformation = icp_solution.RTs.R, icp_solution.RTs.T
         elif self.mode == ICPMode.BATCHED:
             if self.target.tensor_points.shape[2] != self.reference.tensor_points.shape[2]:
                 raise ValueError("In BATCHED mode, 'targets' and 'references' must have the same batch size.")
@@ -124,6 +138,18 @@ class ICPAnalyser:
             target_points = self.target.tensor_points.permute(2, 0, 1)
             icp_solution = pytorch3d.ops.iterative_closest_point(target_points, reference_points,
                                                                  max_iterations=self.iterations)
-            transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1),
-                                              torch.linalg.inv(icp_solution.RTs.R))
-            self.reference.set_points(transformed_points.permute(1, 2, 0), reset_com=True)
+            if not swap_transformation:
+                transformed_points = torch.matmul(reference_points - icp_solution.RTs.T.unsqueeze(1),
+                                                  torch.linalg.inv(icp_solution.RTs.R))
+                if calc_facet_normals:
+                    self.reference.set_points(transformed_points.permute(1, 2, 0), adjust_rotation_centre=True)
+                else:
+                    self.reference.set_points(transformed_points.permute(1, 2, 0), adjust_rotation_centre=True, calc_facet_normals=False)
+                self.transformation = torch.linalg.inv(icp_solution.RTs.R), -(icp_solution.RTs.T.unsqueeze(-2) @ icp_solution.RTs.R).squeeze(1)
+            else:
+                transformed_points = torch.matmul(target_points, icp_solution.RTs.R) + icp_solution.RTs.T.unsqueeze(1)
+                if calc_facet_normals:
+                    self.target.set_points(transformed_points.permute(1, 2, 0), adjust_rotation_centre=True)
+                else:
+                    self.target.set_points(transformed_points.permute(1, 2, 0), adjust_rotation_centre=True, calc_facet_normals=False)
+                self.transformation = icp_solution.RTs.R, icp_solution.RTs.T

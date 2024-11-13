@@ -21,7 +21,7 @@ from src.custom_io import DataHandler, read_and_simplify_registered_meshes, read
 from src.mesh import BatchTorchMesh
 from src.model import PointDistributionModel, distance_to_closest_point
 from src.registration import ICPAnalyser
-from src.sampling import PDMMetropolisSampler
+from src.sampling import PDMMetropolisSampler, create_target_aware_model, create_target_unaware_model
 from src.sampling.proposals import ClosestPointProposal
 from src.sampling.proposals.GaussRandWalk import ParameterProposalType
 from src.visualization import MainVisualizer
@@ -31,6 +31,7 @@ from src.visualization import MainVisualizer
 # Important notes for running Pytorch3d on Windows:
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
+DECIMATE_MESHES = False
 RUN_ON_SCICORE_CLUSTER = True
 RUN_WHOLE_EXPERIMENT = True
 GENERATE_PLOTS = False
@@ -50,14 +51,16 @@ GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
-REL_PATH_MODEL = "datasets/femur-data/project-data/models"
-REL_PATH_REFERENCE = "datasets/femur-data/project-data/reference-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/full-50-cot-reg"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/unaware-std-reg"
 
 DISTAL_END = True
+MODEL_TARGET_AWARE = False
+LAPLACIAN_TYPE = "std"
+ALPHA = 2
+BETA = 0.3
 
 BATCH_SIZE = 50
-CHAIN_LENGTH = 55000
+CHAIN_LENGTH = 45000
 DEFAULT_BURN_IN = 5000
 DECIMATION_TARGET = 200
 
@@ -124,23 +127,16 @@ def trial():
     var_prior_rot = VAR_PRIOR_ROT
 
     target = meshes[loo]
-    # del meshes[loo]
     # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
     #     torch.max(target.tensor_points, dim=0)[1][2].item()
-    # part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
-    # meshes.insert(0, part_target)
-    # ICPAnalyser(meshes).icp()
-    # del meshes[0]
-    # model = PointDistributionModel(meshes=meshes)
-    # shape = meshes[0]
-    del meshes[loo]
-    meshes.insert(0, target)
-    ICPAnalyser(meshes).icp()
-    del meshes[0]
-    model = PointDistributionModel(meshes=meshes)
-    z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-        torch.max(target.tensor_points, dim=0)[1][2].item()
+    # Manually determined landmarks
+    z_min, z_max = 184, 2
     part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
+    del meshes[loo]
+    if MODEL_TARGET_AWARE:
+        model = create_target_aware_model(meshes, DEVICE, target, part_target)
+    else:
+        model = create_target_unaware_model(meshes, target)
     shape = meshes[0]
     # dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
     # observed = (dists < 1e-6).squeeze()
@@ -148,9 +144,10 @@ def trial():
     starting_params = torch.randn((model.rank, BATCH_SIZE), device=DEVICE)
     starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=DEVICE)
     starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=DEVICE)
-    shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
+    shape.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=DEVICE)), adjust_rotation_centre=True)
     batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
                                    model.get_points_from_parameters(starting_params))
+    batched_shape.set_rotation_centre(shape.rotation_centre.unsqueeze(1).expand(3, BATCH_SIZE))
     batched_shape.apply_rotation(starting_rotation)
     batched_shape.apply_translation(starting_translation)
     starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
@@ -161,9 +158,10 @@ def trial():
                                     PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT, var_n=var_likelihood, d=ICP_D,
                                     recalculation_period=ICP_RECALCULATION_PERIOD)
 
-    sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
-                                   gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
-                                   var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot)
+    sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                   correspondences=False, gamma=GAMMA, var_like=var_likelihood,
+                                   uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
+                                   var_prior_rot=var_prior_rot)
 
     generator = torch.Generator(device=DEVICE)
     for _ in tqdm(range(CHAIN_LENGTH)):
@@ -195,30 +193,6 @@ def trial():
     visualizer.run()
 
 
-# Legacy variant of model calculation: Reduce model with full number of points (N = 5000) to desired number of points
-# def trial_legacy():
-#     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-#     # Test procedure with subsequent visualisation
-#     meshes, _ = read_meshes(REL_PATH_MESH, DEVICE)
-#     loo = torch.randint(0, len(meshes), (1,)).item()
-#     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
-#     obs = 0.2
-#     target = meshes[loo]
-#     del meshes[loo]
-#     z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-#         torch.max(target.tensor_points, dim=0)[1][2].item()
-#     part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs)
-#     meshes.insert(0, part_target)
-#     ICPAnalyser(meshes).icp()
-#     del meshes[0]
-#     model = PointDistributionModel(meshes=meshes)
-#     shape = model.decimate(DECIMATION_TARGET)
-#     dec_target = target.simplify_ref(meshes[0], shape)
-#     dec_part_target, _, _ = dec_target.partial_shape(0, 0, obs, True, plane_normal, plane_origin)
-#     # dists = distance_to_closest_point(dec_target.tensor_points.unsqueeze(-1), dec_part_target.tensor_points, 1)
-#     # observed = (dists < 1e-6).squeeze()
-#     batched_target = BatchTorchMesh(dec_part_target, 'target', DEVICE, BATCH_SIZE)
-
 def loocv():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     # LOOCV (Leave-One-Out Cross-Validation) procedure
@@ -233,37 +207,28 @@ def loocv():
         var_prior_trans = VAR_PRIOR_TRANS
         var_prior_rot = VAR_PRIOR_ROT
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
-            for l_ in range(25, len(meshes)):
+            for l_ in range(len(meshes)):
                 # for l_ in range(10):
                 meshes_ = copy.deepcopy(meshes)
                 target = meshes_[l_]
-                # del meshes_[l_]
-                # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-                #     torch.max(target.tensor_points, dim=0)[1][2].item()
-                # part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
-                # meshes_.insert(0, part_target)
-                # ICPAnalyser(meshes_).icp()
-                # del meshes_[0]
-                # model = PointDistributionModel(meshes=meshes_)
-                # shape = meshes_[0]
-                del meshes_[l_]
-                meshes_.insert(0, target)
-                ICPAnalyser(meshes_).icp()
-                del meshes_[0]
-                model = PointDistributionModel(meshes=meshes_)
-                z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-                    torch.max(target.tensor_points, dim=0)[1][2].item()
+                z_min, z_max = 184, 2
                 part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
+                del meshes_[l_]
+                if MODEL_TARGET_AWARE:
+                    model = create_target_aware_model(meshes_, DEVICE, target, part_target)
+                else:
+                    model = create_target_unaware_model(meshes_, target)
                 shape = meshes_[0]
                 dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
                 observed = (dists < 1e-6).squeeze()
                 batched_target = BatchTorchMesh(part_target, 'target', DEVICE, BATCH_SIZE)
                 starting_params = torch.randn((model.rank, BATCH_SIZE), device=DEVICE)
-                starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=DEVICE)
-                starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=DEVICE)
-                shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
+                starting_translation = VAR_PRIOR_TRANS * torch.zeros((3, BATCH_SIZE), device=DEVICE)
+                starting_rotation = VAR_PRIOR_ROT * torch.zeros((3, BATCH_SIZE), device=DEVICE)
+                shape.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=DEVICE)), adjust_rotation_centre=True)
                 batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
                                                model.get_points_from_parameters(starting_params))
+                batched_shape.set_rotation_centre(shape.rotation_centre.unsqueeze(1).expand(3, BATCH_SIZE))
                 batched_shape.apply_rotation(starting_rotation)
                 batched_shape.apply_translation(starting_translation)
                 starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
@@ -275,8 +240,8 @@ def loocv():
                                                 var_n=var_likelihood, d=ICP_D,
                                                 recalculation_period=ICP_RECALCULATION_PERIOD)
 
-                sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
-                                               gamma=GAMMA, var_like=var_likelihood,
+                sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA,
+                                               BETA, correspondences=False, gamma=GAMMA, var_like=var_likelihood,
                                                uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
                                                var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
                                                save_residuals=True)
@@ -297,7 +262,7 @@ def loocv():
                     sampler.decide(proposal_type, target)
                 proposal.close()
 
-                analyser = ChainAnalyser(sampler, proposal, model, observed, sampler.full_chain,
+                analyser = ChainAnalyser(sampler, proposal, model, target, observed, sampler.full_chain,
                                          default_burn_in=DEFAULT_BURN_IN)
                 # analyser.detect_burn_in()
                 data = analyser.data_to_json(10, l_, int(100 * percentage), int(100 * var_likelihood))
@@ -309,10 +274,13 @@ def loocv():
                                                part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood),
                                                save_html=True)
                 mean_dist_c_map = torch.tensor(data['accuracy']['mean_dist_corr_map'])
+                avg_var = torch.tensor(data['accuracy']['var']).mean(dim=1)
                 handler.save_target_map_dist(target, mean_dist_c_map, l_, int(100 * percentage),
                                              int(100 * var_likelihood), save_html=True)
+                handler.save_target_avg(target, avg_var, l_, int(100 * percentage),
+                                             int(100 * var_likelihood), save_html=True)
                 # Delete everything that is potentially located on the GPU
-                del analyser, batched_shape, batched_target, dists, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, target
+                del analyser, avg_var, batched_shape, batched_target, dists, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
                 torch.cuda.empty_cache()
                 # Code to save further data
                 # chain_residual_dict = sampler.get_dict_chain_and_residuals()
@@ -350,14 +318,15 @@ def mcmc_task(gpu_id_, chunk_):
         # for l_ in range(41, 47):
         meshes_ = copy.deepcopy(meshes)
         target = meshes_[l_]
-        del meshes_[l_]
-        z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
-            torch.max(target.tensor_points, dim=0)[1][2].item()
+        # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
+        #    torch.max(target.tensor_points, dim=0)[1][2].item()
+        z_min, z_max = 184, 2
         part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
-        meshes_.insert(0, part_target)
-        ICPAnalyser(meshes_).icp()
-        del meshes_[0]
-        model = PointDistributionModel(meshes=meshes_)
+        del meshes_[l_]
+        if MODEL_TARGET_AWARE:
+            model = create_target_aware_model(meshes_, device_, target, part_target)
+        else:
+            model = create_target_unaware_model(meshes_, target)
         shape = meshes_[0]
         dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
         observed = (dists < 1e-6).squeeze()
@@ -365,9 +334,10 @@ def mcmc_task(gpu_id_, chunk_):
         starting_params = torch.randn((model.rank, BATCH_SIZE), device=device_)
         starting_translation = VAR_PRIOR_TRANS * torch.randn((3, BATCH_SIZE), device=device_)
         starting_rotation = VAR_PRIOR_ROT * torch.randn((3, BATCH_SIZE), device=device_)
-        shape.set_points(model.get_points_from_parameters(starting_params[:, 0]), reset_com=True)
-        batched_shape = BatchTorchMesh(shape, 'current_shapes', DEVICE, BATCH_SIZE, True,
+        shape.set_points(model.get_points_from_parameters(torch.zeros(model.rank, device=device_)), adjust_rotation_centre=True)
+        batched_shape = BatchTorchMesh(shape, 'current_shapes', device_, BATCH_SIZE, True,
                                        model.get_points_from_parameters(starting_params))
+        batched_shape.set_rotation_centre(shape.rotation_centre.unsqueeze(1).expand(3, BATCH_SIZE))
         batched_shape.apply_rotation(starting_rotation)
         batched_shape.apply_translation(starting_translation)
         starting_params = torch.vstack((starting_params, starting_translation, starting_rotation))
@@ -378,8 +348,8 @@ def mcmc_task(gpu_id_, chunk_):
                                         prob_trans, prob_rot, var_n=var_likelihood, d=ICP_D,
                                         recalculation_period=ICP_RECALCULATION_PERIOD)
 
-        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, correspondences=False,
-                                       gamma=GAMMA, var_like=var_likelihood,
+        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                       correspondences=False, gamma=GAMMA, var_like=var_likelihood,
                                        uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
                                        var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
                                        save_residuals=True)
@@ -400,7 +370,7 @@ def mcmc_task(gpu_id_, chunk_):
             sampler.decide(proposal_type, target)
         proposal.close()
 
-        analyser = ChainAnalyser(sampler, proposal, model, observed, sampler.full_chain,
+        analyser = ChainAnalyser(sampler, proposal, model, target, observed, sampler.full_chain,
                                  default_burn_in=DEFAULT_BURN_IN)
         data = analyser.data_to_json(10, l_, int(100 * percentage), int(100 * var_likelihood))
         traceplots = analyser.get_traceplots(l_, int(100 * percentage), int(100 * var_likelihood))
@@ -410,9 +380,13 @@ def mcmc_task(gpu_id_, chunk_):
         handler.save_posterior_samples(analyser.mesh_chain[:, :, :, analyser.burn_in:], batched_shape,
                                        part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood))
         mean_dist_c_map = torch.tensor(data['accuracy']['mean_dist_corr_map'])
-        handler.save_target_map_dist(target, mean_dist_c_map, l_, int(100 * percentage), int(100 * var_likelihood))
+        avg_var = torch.tensor(data['accuracy']['var']).mean(dim=1)
+        handler.save_target_map_dist(target, mean_dist_c_map, l_, int(100 * percentage), int(100 * var_likelihood),
+                                     save_html=True)
+        handler.save_target_avg(target, avg_var, l_, int(100 * percentage), int(100 * var_likelihood), save_html=True)
+
         # Delete everything that is potentially located on the GPU
-        del analyser, batched_shape, batched_target, dists, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, target
+        del analyser, avg_var, batched_shape, batched_target, dists, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
         torch.cuda.empty_cache()
         # Code to save further data
         # chain_residual_dict = sampler.get_dict_chain_and_residuals()
@@ -422,7 +396,8 @@ def mcmc_task(gpu_id_, chunk_):
 
 
 if __name__ == "__main__":
-    simplify_registered()
+    if DECIMATE_MESHES:
+        simplify_registered()
     if RUN_WHOLE_EXPERIMENT:
         if RUN_ON_SCICORE_CLUSTER:
             mp.set_start_method('spawn')

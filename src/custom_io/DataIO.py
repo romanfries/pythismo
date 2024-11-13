@@ -312,6 +312,43 @@ class DataHandler:
         else:
             fig.write_image(output_file, width=1920, height=1080)
 
+    def save_target_avg(self, target, variances, loo, obs, additional_param, save_html=False):
+        target.change_device('cpu')
+        fig = go.Figure(data=[go.Mesh3d(x=target.tensor_points[:, 0].numpy(),
+                                        y=target.tensor_points[:, 1].numpy(),
+                                        z=target.tensor_points[:, 2].numpy(),
+                                        i=target.cells[0].data[:, 0].numpy(),
+                                        j=target.cells[0].data[:, 1].numpy(),
+                                        k=target.cells[0].data[:, 2].numpy(),
+                                        intensity=variances.cpu().numpy(),
+                                        colorscale='bluered',
+                                        cmin=0,
+                                        cmax=130,
+                                        colorbar=dict(title=r'Variance [$\mathrm{mm}^{2}$]', thickness=20, x=0.7),
+                                        intensitymode='vertex'
+                                        )
+                              ]
+                        )
+        fig.update_layout(
+            title=f'Average variance at each landmark for reconstructed target femur {loo}',
+            scene=dict(
+                xaxis_title='x',
+                yaxis_title='y',
+                zaxis_title='z'
+            )
+        )
+
+        if save_html:
+            output_filename = f'target_var_{loo}_{obs}_{additional_param}.html'
+        else:
+            output_filename = f'target_var_{loo}_{obs}_{additional_param}.png'
+        output_file = self.samples_dir / output_filename
+
+        if save_html:
+            fig.write_html(output_file)
+        else:
+            fig.write_image(output_file, width=1920, height=1080)
+
     # TODO: Add an additional parameter for the following three read and write methods (see method above).
     def write_chain_and_residuals(self, dict_chain_and_residuals, loo, obs):
         # There is currently no application implemented for stored chains and residuals.

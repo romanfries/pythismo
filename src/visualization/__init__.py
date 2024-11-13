@@ -1,1 +1,1 @@
-from .DashViewer import MainVisualizer
+from .DashViewer import MainVisualizer, VisualizerLight

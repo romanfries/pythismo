@@ -532,6 +532,10 @@ class PointDistributionModel:
         else:
             return self.eigenvectors @ (torch.diag(self.eigenvalues) @ self.eigenvectors.t())
 
+    def get_mean_points(self):
+        # TODO: Write docstring.
+        return self.mean.reshape(self.num_points, 3)
+
     def change_device(self, dev):
         """
         Change the device on which the tensor operations are or will be allocated.
@@ -735,6 +739,9 @@ class BatchedPointDistributionModel(PointDistributionModel):
         else:
             return (self.eigenvectors.permute(2, 0, 1) @ (torch.diag_embed(self.eigenvalues.permute(1, 0)) @
                                                           self.eigenvectors.permute(2, 1, 0))).permute(1, 2, 0)
+
+    def get_mean_points(self):
+        return self.mean.reshape(self.num_points, 3, self.batch_size)
 
     def get_pdm(self, k):
         """

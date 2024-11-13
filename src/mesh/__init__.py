@@ -1,1 +1,1 @@
-from .TMesh import get_transformation_matrix, TorchMeshGpu, BatchTorchMesh
+from .TMesh import get_transformation_matrix_from_euler_angles, TorchMeshGpu, BatchTorchMesh
