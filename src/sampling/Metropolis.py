@@ -9,7 +9,7 @@ from pytorch3d.loss.point_mesh_distance import point_face_distance
 import point_cloud_utils as pcu
 
 from src.mesh.TMesh import get_transformation_matrix_from_rot_and_trans
-from src.model import PointDistributionModel
+from src.model import PointDistributionModel, BatchedPointDistributionModel
 from src.registration import ProcrustesAnalyser, ICPAnalyser
 from src.sampling.proposals import ParameterProposalType
 from src.sampling.proposals.ClosestPoint import extract_bounds_verts, is_point_on_line_segment
@@ -62,7 +62,7 @@ def unnormalised_log_posterior(distances, inv_cov_operator, parameters, translat
     :rtype: torch.Tensor
     """
     residual = torch.mul(distances, inv_cov_operator @ distances)
-    sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
+    # sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
     log_likelihoods = 0.5 * gamma * (torch.mean(-residual, dim=0) / sigma_lm)
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
@@ -118,7 +118,7 @@ def unnormalised_log_posterior_curvature(distances, inv_cov_operator, parameters
     :rtype: torch.Tensor
     """
     residual = torch.mul(distances, inv_cov_operator @ distances)
-    sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
+    # sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
     log_likelihoods = 0.5 * gamma * (torch.sum(torch.mul((-residual / sigma_lm), rel_curvs), dim=0))
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
@@ -156,24 +156,28 @@ def get_laplacian(type, verts, faces, edges, alpha, beta, dev):
         graph_laplacian = D @ graph_laplacian @ D
     if type == "eps":
         dists, idx, knn = pytorch3d.ops.ball_query(verts.unsqueeze(-1).permute(2, 0, 1),
-                                                   verts.unsqueeze(-1).permute(2, 0, 1), K=size, radius=20.0)
+                                                   verts.unsqueeze(-1).permute(2, 0, 1), K=size, radius=30.0)
         dists, idx = dists[0, :, :], idx[0, :, :]
         rows = torch.arange(dists.size(0), device=dev).unsqueeze(1).expand_as(dists)
         idx[idx == -1] = rows[idx == -1]
         graph_laplacian = torch.zeros((size, size), device=dev).scatter_(1, idx, dists)
         graph_laplacian = torch.where(graph_laplacian > 0, -torch.exp(-graph_laplacian / 900.0), graph_laplacian)
+        graph_laplacian = graph_laplacian / torch.norm(graph_laplacian, p=2, dim=1, keepdim=True)
+        graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = 1.0
 
-    prec = torch.matrix_power((identity + beta * graph_laplacian), alpha)
-    eigvals = (1.0 / (torch.pow(1 + beta * torch.linalg.eigh(graph_laplacian + 1e-6 * identity)[0], alpha) + 1e-6))
-    prec *= eigvals.mean()
-    det = -0.5 * torch.log(eigvals / eigvals.mean() + 1e-6).sum(-1) - (size / 2) * torch.log(torch.tensor(2 * torch.pi, device=dev))
-    return prec, eigvals, det
+    prec = torch.matrix_power((0.5 * identity + beta * graph_laplacian), alpha)
+    eigvals = (1.0 / (torch.pow(0.5 + beta * torch.linalg.eigh(graph_laplacian)[0], alpha) + 1e-6))
+    # prec *= eigvals.mean()
+    normalization = -0.5 * torch.log(eigvals / eigvals.mean() + 1e-6).sum(-1) - (size / 2) * torch.log(
+        torch.tensor(2 * torch.pi, device=dev))
+    return prec, eigvals, normalization
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, correspondences=True, gamma=50.0, var_like=1.0,
-                 var_prior_mod=1.0, uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005,
-                 save_full_mesh_chain=False, save_residuals=False):
+    def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, fixed_correspondences=True,
+                 triangles=None, barycentric_coords=None, gamma=50.0, var_like=1.0, var_prior_mod=1.0,
+                 uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005, save_full_mesh_chain=False,
+                 save_residuals=False):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -190,9 +194,9 @@ class PDMMetropolisSampler:
         :param target: Observed (partial) shape to be analysed. Remark: It is required that the target has the same
         ‘batch_size’ as ‘batch_mesh’.
         :type target: BatchTorchMesh
-        :param correspondences: Boolean variable that determines whether there are known point correspondences between
+        :param fixed_correspondences: Boolean variable that determines whether there are known point fixed_correspondences between
         the model and the target.
-        :type correspondences: bool
+        :type fixed_correspondences: bool
         :param gamma: Multiplication factor of the likelihood term.
         :type gamma: float
         :param var_like: Variance used (in square millimetres) when determining the likelihood term of the posterior.
@@ -223,7 +227,9 @@ class PDMMetropolisSampler:
         self.points = self.batch_mesh.tensor_points
         self.target = target
         self.target_points = self.target.tensor_points
-        self.correspondences = correspondences
+        self.fixed_correspondences = fixed_correspondences
+        self.triangles = triangles
+        self.barycentric_coords = barycentric_coords
         self.batch_size = self.proposal.batch_size
         self.gamma = gamma
         self.var_like = var_like
@@ -262,7 +268,9 @@ class PDMMetropolisSampler:
         self.laplacian_type = laplacian_type
         self.alpha = alpha
         self.beta = beta
-        self.inv_cov_operator, eigvals, det = get_laplacian(self.laplacian_type, self.target_points[:, :, 0], self.target.cells[0].data, edges, self.alpha, self.beta, self.dev)
+        self.inv_cov_operator, eigvals, det = get_laplacian(self.laplacian_type, self.target_points[:, :, 0],
+                                                            self.target.cells[0].data, edges, self.alpha, self.beta,
+                                                            self.dev)
 
         self.posterior = None
         self.determine_quality(ParameterProposalType.MODEL_RANDOM)
@@ -332,10 +340,9 @@ class PDMMetropolisSampler:
         """
         self.update_mesh(parameter_proposal_type)
         self.old_posterior = self.posterior
-        if self.correspondences:
-            # TODO: Does not support partial targets. The number of points of the current mesh instances and the target
-            #  must be identical (equal to the full number of model points N).
-            differences = torch.sub(self.points, self.target_points)
+        if self.fixed_correspondences:
+            correspondences = (batch_interpolate_barycentric_coords(self.batch_mesh.cells[0].data.unsqueeze(0).expand(self.batch_size, -1, -1), self.triangles.unsqueeze(0).expand(self.batch_size, -1), self.barycentric_coords.unsqueeze(0).expand(self.batch_size, -1, -1), self.points.permute(2, 0, 1))).permute(1, 2, 0)
+            differences = torch.sub(self.target_points, correspondences)
             distances = torch.linalg.vector_norm(differences, dim=1)
             posterior = unnormalised_log_posterior(distances, self.inv_cov_operator, self.proposal.parameters,
                                                    self.proposal.translation, self.proposal.rotation, self.gamma,
@@ -483,12 +490,18 @@ class PDMMetropolisSampler:
             - Total ratio of accepted proposals.
         :rtype: tuple
         """
-        accepted_tot = torch.sum((self.accepted_par + self.accepted_rnd + self.accepted_trans + self.accepted_rot)[selector]).item()
-        rejected_tot = torch.sum((self.rejected_par + self.rejected_rnd + self.rejected_trans + self.rejected_rot)[selector]).item()
-        ratio_par = float(torch.sum(self.accepted_par[selector]).item()) / torch.sum((self.accepted_par + self.rejected_par)[selector]).item()
-        ratio_rnd = float(torch.sum(self.accepted_rnd[selector]).item()) / torch.sum((self.accepted_rnd + self.rejected_rnd)[selector]).item()
-        ratio_trans = float(torch.sum(self.accepted_trans[selector]).item()) / torch.sum((self.accepted_trans + self.rejected_trans)[selector]).item()
-        ratio_rot = float(torch.sum(self.accepted_rot[selector]).item()) / torch.sum((self.accepted_rot + self.rejected_rot)[selector]).item()
+        accepted_tot = torch.sum(
+            (self.accepted_par + self.accepted_rnd + self.accepted_trans + self.accepted_rot)[selector]).item()
+        rejected_tot = torch.sum(
+            (self.rejected_par + self.rejected_rnd + self.rejected_trans + self.rejected_rot)[selector]).item()
+        ratio_par = float(torch.sum(self.accepted_par[selector]).item()) / torch.sum(
+            (self.accepted_par + self.rejected_par)[selector]).item()
+        ratio_rnd = float(torch.sum(self.accepted_rnd[selector]).item()) / torch.sum(
+            (self.accepted_rnd + self.rejected_rnd)[selector]).item()
+        ratio_trans = float(torch.sum(self.accepted_trans[selector]).item()) / torch.sum(
+            (self.accepted_trans + self.rejected_trans)[selector]).item()
+        ratio_rot = float(torch.sum(self.accepted_rot[selector]).item()) / torch.sum(
+            (self.accepted_rot + self.rejected_rot)[selector]).item()
         ratio_tot = float(accepted_tot) / (accepted_tot + rejected_tot)
         return ratio_par, ratio_rnd, ratio_trans, ratio_rot, ratio_tot
         # return ratio_par, None, None, ratio_tot
@@ -545,45 +558,78 @@ def create_target_aware_model(meshes, dev, target, part_target):
     mean_shape.set_points(torch.mean(gpa.points, dim=0), adjust_rotation_centre=True)
     icp = ICPAnalyser([part_target, mean_shape])
     icp.icp(swap_transformation=True)
-    target.set_points((torch.matmul(target.tensor_points, icp.transformation[0]) + icp.transformation[1].unsqueeze(1)).squeeze(), adjust_rotation_centre=True)
+    target.set_points(
+        (torch.matmul(target.tensor_points, icp.transformation[0]) + icp.transformation[1].unsqueeze(1)).squeeze(),
+        adjust_rotation_centre=True)
 
-    # Estimate the correspondences
-    cloud_cpu = mean_shape.tensor_points.cpu().numpy()
-    mesh_cpu = part_target.tensor_points.cpu().numpy()
-    mesh_faces = part_target.cells[0].data.cpu().numpy()
-    dists, fid, bc = pcu.closest_points_on_mesh(cloud_cpu, mesh_cpu, mesh_faces)
-    closest_pts = pcu.interpolate_barycentric_coords(mesh_faces, fid, bc, mesh_cpu)
+    # Estimate the correspondences using model sampling
+    closest_pts, dists, _, _ = estimate_correspondences(mean_shape, part_target, dev)
 
     # Remove wrong correspondences by detecting the nearest points located on the mesh boundary
     # boundary_edges = trimesh.base.Trimesh(mesh_cpu, mesh_faces, process=True, validate=True).outline().vertex_nodes
     boundary_edges = extract_bounds_verts(part_target.cells[0].data, extract_edges=True)
-    observed = ~(is_point_on_line_segment(torch.tensor(closest_pts, device=dev), torch.tensor(mesh_cpu, device=dev)[boundary_edges], tol=1e-2))
+    observed = ~(
+        is_point_on_line_segment(closest_pts, part_target.tensor_points[boundary_edges],
+                                 tol=1e-2))
 
     # Align all meshes using the observed points
     meshes_observed_verts = copy.deepcopy(meshes)
     _ = list(map(lambda x, y: x.set_points(y.tensor_points[observed, :]), meshes_observed_verts, meshes))
     target_corresponding_verts = part_target.copy()
-    target_corresponding_verts.set_points(torch.tensor(closest_pts, device=dev)[observed])
+    target_corresponding_verts.set_points(closest_pts[observed])
     meshes_observed_verts.insert(0, target_corresponding_verts)
-
     gpa_target = ProcrustesAnalyser(meshes_observed_verts)
     gpa_target.generalised_procrustes_alignment()
-    # Apply the found transformations to all full meshes
-    transformations = get_transformation_matrix_from_rot_and_trans(gpa_target.transformation[0].permute(1, 2, 0), gpa_target.transformation[1].permute(1, 0))
+
+    # Apply the found transformations to full meshes
+    transformations = get_transformation_matrix_from_rot_and_trans(gpa_target.transformation[0].permute(1, 2, 0),
+                                                                   gpa_target.transformation[1].permute(1, 0))
     meshes.insert(0, part_target)
     _ = list(map(lambda x, y: x.apply_transformation(y), meshes, transformations.permute(2, 0, 1)))
     target.apply_transformation(transformations.permute(2, 0, 1)[0])
     del meshes[0]
 
+    # Estimate the correspondences using target sampling
+    _, _, fid, bc = estimate_correspondences(part_target, mean_shape, dev)
     model = PointDistributionModel(meshes=meshes)
-    return model
+    return model, fid, bc
 
 
-def create_target_unaware_model(meshes, target):
+def create_target_unaware_model(meshes, dev, target):
     ProcrustesAnalyser(meshes).generalised_procrustes_alignment()
     model = PointDistributionModel(meshes=meshes)
     mean_shape = meshes[0].copy()
     mean_shape.set_points(model.get_mean_points(), adjust_rotation_centre=True)
     ICPAnalyser([target, mean_shape]).icp()
     model.mean = mean_shape.tensor_points.reshape(3 * model.num_points, 1)
-    return model
+
+    # Estimate the correspondences using target sampling
+    _, _, fid, bc = estimate_correspondences(target, mean_shape, dev)
+
+    return model, fid, bc
+
+
+def estimate_correspondences(x, y, dev):
+    cloud_cpu = x.tensor_points.cpu().numpy()
+    mesh_cpu = y.tensor_points.cpu().numpy()
+    mesh_faces = y.cells[0].data.cpu().numpy()
+    dists, fid, bc = pcu.closest_points_on_mesh(cloud_cpu, mesh_cpu, mesh_faces)
+    closest_pts = pcu.interpolate_barycentric_coords(mesh_faces, fid, bc, mesh_cpu)
+    return torch.tensor(closest_pts, device=dev), torch.tensor(dists, device=dev), torch.tensor(fid, device=dev), \
+        torch.tensor(bc, device=dev)
+
+
+def interpolate_barycentric_coords(f, fi, bc, attribute):
+    f_vertices = f[fi]
+    f_attributes = attribute[f_vertices]
+    return (f_attributes * bc.unsqueeze(-1)).sum(dim=1)
+
+
+def batch_interpolate_barycentric_coords(f, fi, bc, attribute):
+    batch_size = f.shape[0]
+    batch_indices = torch.arange(batch_size, device=f.device).unsqueeze(-1)
+    batch_indices_fi = batch_indices.expand(-1, fi.shape[1])
+    f_vertices = f[batch_indices_fi, fi]
+    batch_indices_f = batch_indices.unsqueeze(-1).expand(-1, f_vertices.shape[1], f_vertices.shape[2])
+    f_attributes = attribute[batch_indices_f, f_vertices]
+    return (f_attributes * bc.unsqueeze(-1)).sum(dim=2)

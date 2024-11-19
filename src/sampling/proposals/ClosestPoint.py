@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import warnings
 
@@ -5,12 +7,14 @@ import meshio
 import torch
 from torch.autograd.function import once_differentiable
 
+import pytorch3d.transforms
 from pytorch3d import _C
 from pytorch3d.loss.point_mesh_distance import _PointFaceDistance, point_face_distance
 import point_cloud_utils as pcu
 
-from src.mesh import BatchTorchMesh, TorchMeshGpu
+from src.mesh import BatchTorchMesh, TorchMeshGpu, get_transformation_matrix_from_euler_angles
 from src.model import PointDistributionModel, BatchedPointDistributionModel
+from src.registration.Procrustes import PCAMode, ProcrustesAnalyser
 from src.sampling.proposals.GaussRandWalk import GaussianRandomWalkProposal, ParameterProposalType
 
 
@@ -200,6 +204,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         self.single_target.set_points(batched_target.tensor_points[:, :, 0].squeeze(), adjust_rotation_centre=True)
         self.batched_targets = batched_target
         self.partial_target = self.batched_targets.num_points < self.batched_shapes.num_points
+        self.observed, self.closest_pts = None, None
 
         self.var_mod_icp = var_mod_informed
         self.prob_mod_icp = prob_mod_informed
@@ -289,6 +294,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
             boundary_edges = extract_bounds_verts(target_cells, extract_edges=True)
             on_boundary = is_point_on_line_segment(torch.tensor(closest_pts, device=self.dev),
                                                    torch.tensor(mesh_cpu, device=self.dev)[boundary_edges], tol=1e-2)
+        self.observed, self.closest_pts = ~on_boundary, torch.tensor(closest_pts, device=self.dev)
 
         # 3: Construct the set of observations L based on corresponding landmark pairs (s_i, c_i) according to eq. 9
         # and define the noise \epsilon_i \distas \mathcal{N}(0, \Sigma_{s_{i}} using eq. 16.
@@ -336,7 +342,7 @@ class ClosestPointProposal(GaussianRandomWalkProposal):
         cov_posterior = cov_prior - K_xy @ K_yy_inv @ torch.t(K_xy)
         # TODO: There is a faster method to calculate the posterior model that takes advantage of the fact that the
         #       model is only of low rank. This is implemented in Scalismo.
-        posterior_model = BatchedPointDistributionModel(self.batch_size, mean_and_cov=True,
+        posterior_model = BatchedPointDistributionModel(self.batch_size, identical_cov=True, mean_and_cov=True,
                                                         # mean=mean_posterior,
                                                         mean=batched_shape.tensor_points.reshape(
                                                             (3 * m, self.batch_size)),

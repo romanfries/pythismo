@@ -174,7 +174,9 @@ class ChainAnalyser:
         :return: Tensor containing the variances mentioned above with shape (num_points, batch_size).
         :rtype: torch.Tensor
         """
-        return self.mesh_chain[:, :, :, self.burn_in:].var(dim=3).mean(dim=1)
+        within = self.mesh_chain[:, :, :, self.burn_in:].var(dim=3).mean(dim=1)
+        between = (self.chain_length - self.burn_in) * self.mesh_chain[:, :, :, self.burn_in:].mean(dim=3).var(dim=2).mean(dim=1)
+        return within, between
 
     def posterior_analytics(self):
         """
@@ -237,13 +239,14 @@ class ChainAnalyser:
         :rtype: str
         """
         not_converged = self.simple_convergence_check()
+        # not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.param_chain.device)
         means, mins, maxs, vars = self.posterior_analytics()
         rhat = self.rhat(ix=ix)
         ess = self.ess(ix=ix)
         mean_dist_c_post, mean_dist_n_post, squared_c_post, squared_n_post = self.mean_dist_to_target_post()
         mean_dist_c_map, mean_dist_n_map, squared_c_map, squared_n_map = self.mean_dist_to_target_map()
         hausdorff_avg, hausdorff_map = self.hausdorff_distances()
-        avg_var = self.avg_variance_per_point()
+        avg_var_within, avg_var_between = self.avg_variance_per_point()
         acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio(~not_converged)
         data = {
             'description': 'MCMC statistics',
@@ -268,7 +271,8 @@ class ChainAnalyser:
                 'squared_clp_map': squared_n_map.tolist(),
                 'hausdorff_avg': hausdorff_avg.tolist(),
                 'hausdorff_map': hausdorff_map,
-                'var': avg_var.tolist()
+                'var': avg_var_within.tolist(),
+                'var_between': avg_var_between.tolist()
             },
             'unnormalised_log_density_posterior': {
                 'mean': means.tolist(),

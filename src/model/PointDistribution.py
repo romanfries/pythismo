@@ -569,14 +569,14 @@ class PointDistributionModel:
         :return: Said BatchedPointDistributionModel instance.
         :rtype: BatchedPointDistributionModel
         """
-        return BatchedPointDistributionModel(batch_size=batch_size, mean_and_cov=True,
+        return BatchedPointDistributionModel(batch_size=batch_size, identical_cov=True, mean_and_cov=True,
                                              mean=self.mean.expand(-1, batch_size),
                                              cov=self.get_covariance().unsqueeze(-1).expand(-1, -1, batch_size),
                                              rank=self.rank)
 
 
 class BatchedPointDistributionModel(PointDistributionModel):
-    def __init__(self, batch_size, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None,
+    def __init__(self, batch_size, identical_cov=False, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None,
                  rank=None, dev=None):
         """
         Class that defines and creates a batched point distribution model (PDM), i.e., 'batch_size' many different PDMs
@@ -613,7 +613,9 @@ class BatchedPointDistributionModel(PointDistributionModel):
         self.batch_size = batch_size
         self.read_in = read_in
         self.mean_and_cov = mean_and_cov
+        self.identical_cov = identical_cov
         if self.read_in:
+            # TODO: Reading in batched PDMs has never been carried out and tested
             self.meshes = None
             self.stacked_points = None
             # self.mean = (model.get('points').reshape(-1, order='F') + model.get('mean'))[:, np.newaxis]
@@ -639,12 +641,19 @@ class BatchedPointDistributionModel(PointDistributionModel):
             self.points_centered = None
             self.num_points = int(self.mean.shape[0] / 3)
             self.rank = rank
-            eigenvalues, self.eigenvectors = apply_batch_svd(cov, self.rank)
+            if self.identical_cov:
+                eigenvalues, self.eigenvectors = apply_svd(cov[:, :, 0], self.rank)
+                eigenvalues = eigenvalues.unsqueeze(-1).expand(-1, self.batch_size)
+                self.eigenvectors = self.eigenvectors.unsqueeze(-1).expand(-1, -1, self.batch_size)
+            else:
+                eigenvalues, self.eigenvectors = apply_batch_svd(cov, self.rank)
             self.eigenvalues = torch.sqrt((self.rank - 1) * eigenvalues)
             self.components = self.eigenvectors * torch.sqrt(self.eigenvalues).view(1, self.rank, -1)
             self.parameters = None
             self.decimated = False
         else:
+            # It is not possible to create different PDMs using the same set of meshes as a base
+            self.identical_cov = True
             self.meshes = meshes
             self.stacked_points = extract_points(self.meshes)
             self.dev = self.stacked_points.device
@@ -657,7 +666,9 @@ class BatchedPointDistributionModel(PointDistributionModel):
             self.num_points = int(self.stacked_points.size()[0] / 3)
             self.rank = self.stacked_points.size()[1]
             # Eigenvectors are the columns of the 2-dimensional ndarray 'self.eigenvectors'
-            self.eigenvalues, self.eigenvectors = apply_batch_svd(self.points_centered, self.rank)
+            self.eigenvalues, self.eigenvectors = apply_svd(self.points_centered[:, :, 0], self.rank)
+            self.eigenvalues = self.eigenvalues.unsqueeze(-1).expand(-1, self.batch_size)
+            self.eigenvectors = self.eigenvectors.unsqueeze(-1).expand(-1, -1, self.batch_size)
             self.components = self.eigenvectors * torch.sqrt(self.eigenvalues).view(1, self.rank, -1)
             # self.parameters = get_parameters(self.points_centered, self.eigenvectors)
             self.parameters = get_batch_parameters(self.points_centered[:, :, :], self.components)

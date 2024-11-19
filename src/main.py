@@ -2,6 +2,7 @@ import copy
 import math
 import os
 import sys
+from operator import attrgetter
 from pathlib import Path
 
 import itertools
@@ -23,7 +24,7 @@ from src.model import PointDistributionModel, distance_to_closest_point
 from src.registration import ICPAnalyser
 from src.sampling import PDMMetropolisSampler, create_target_aware_model, create_target_unaware_model
 from src.sampling.proposals import ClosestPointProposal
-from src.sampling.proposals.GaussRandWalk import ParameterProposalType
+from src.sampling.proposals.GaussRandWalk import ParameterProposalType, GaussianRandomWalkProposal
 from src.visualization import MainVisualizer
 
 # TODO: Create a Python package to avoid absolute imports
@@ -32,7 +33,7 @@ from src.visualization import MainVisualizer
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
 DECIMATE_MESHES = False
-RUN_ON_SCICORE_CLUSTER = True
+RUN_ON_SCICORE_CLUSTER = False
 RUN_WHOLE_EXPERIMENT = True
 GENERATE_PLOTS = False
 # Only relevant, if GENERATE_PLOTS is True. If True, plots are generated that show the average point wise
@@ -46,34 +47,39 @@ if RUN_ON_SCICORE_CLUSTER:
 else:
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-NUM_GPUS = 4
+NUM_GPUS = 1
 GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
-REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/unaware-std-reg"
+REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated-1000"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/test-2"
 
 DISTAL_END = True
-MODEL_TARGET_AWARE = False
-LAPLACIAN_TYPE = "std"
-ALPHA = 2
+ASSUME_FIXED_CORRESPONDENCES = False
+MODEL_TARGET_AWARE = True
+LAPLACIAN_TYPE = "none"
+ALPHA = 1
 BETA = 0.3
 
-BATCH_SIZE = 50
-CHAIN_LENGTH = 45000
+BATCH_SIZE = 10
+CHAIN_LENGTH = 10000
 DEFAULT_BURN_IN = 5000
-DECIMATION_TARGET = 200
+DECIMATION_TARGET = 1000
 
 MODEL_INFORMED_PROBABILITY = 0.5
 MODEL_RANDOM_PROBABILITY = 0.1
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-VAR_MOD_RANDOM = torch.tensor([0.06, 0.12, 0.24], device=DEVICE)
-VAR_MOD_INFORMED = torch.tensor([0.12, 0.24, 0.48], device=DEVICE)
-VAR_TRANS = torch.tensor([0.2, 0.4, 0.8], device=DEVICE)
+VAR_MOD_RANDOM = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
+# VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
+VAR_MOD_INFORMED = torch.tensor([0.16, 0.32, 0.64], device=DEVICE)
+# VAR_MOD_INFORMED = torch.tensor([0.12, 0.24, 0.48], device=DEVICE)
+VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
+# VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
 # Variance in radians
-VAR_ROT = torch.tensor([0.0015, 0.003, 0.006], device=DEVICE)
+VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
+# VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
 PROB_MOD_RANDOM = PROB_MOD_INFORMED = PROB_TRANS = PROB_ROT = torch.tensor([0.2, 0.6, 0.2], device=DEVICE)
 
 UNIFORM_POSE_PRIOR = False
@@ -103,8 +109,9 @@ def simplify_registered():
 def plot():
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
+    # handler.rename_files()
     data_dict = handler.read_all_statistics()
-    handler.generate_plots(data_dict, SEPARATE_PLOTS)
+    handler.generate_plots(4, data_dict, SEPARATE_PLOTS)
 
 
 def trial():
@@ -130,13 +137,13 @@ def trial():
     # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
     #     torch.max(target.tensor_points, dim=0)[1][2].item()
     # Manually determined landmarks
-    z_min, z_max = 184, 2
+    z_min, z_max = 876, 9
     part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
     del meshes[loo]
     if MODEL_TARGET_AWARE:
-        model = create_target_aware_model(meshes, DEVICE, target, part_target)
+        model, fid, bc = create_target_aware_model(meshes, DEVICE, target, part_target)
     else:
-        model = create_target_unaware_model(meshes, target)
+        model, fid, bc = create_target_unaware_model(meshes, DEVICE, part_target)
     shape = meshes[0]
     # dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
     # observed = (dists < 1e-6).squeeze()
@@ -157,11 +164,16 @@ def trial():
                                     var_mod_random, var_mod_informed, var_trans, var_rot, PROB_MOD_RANDOM,
                                     PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT, var_n=var_likelihood, d=ICP_D,
                                     recalculation_period=ICP_RECALCULATION_PERIOD)
-
-    sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
-                                   correspondences=False, gamma=GAMMA, var_like=var_likelihood,
-                                   uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
-                                   var_prior_rot=var_prior_rot)
+    if ASSUME_FIXED_CORRESPONDENCES:
+        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                       fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
+                                       gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
+                                       var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot)
+    else:
+        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                       fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
+                                       uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
+                                       var_prior_rot=var_prior_rot)
 
     generator = torch.Generator(device=DEVICE)
     for _ in tqdm(range(CHAIN_LENGTH)):
@@ -179,7 +191,7 @@ def trial():
         sampler.decide(proposal_type, target)
     proposal.close()
     # batched_full_target = BatchTorchMesh(target, 'target', torch.device("cpu"), BATCH_SIZE)
-
+    # batched_shape.set_points(torch.stack(list(map(attrgetter('tensor_points'), meshes_))).permute(1, 2, 0))
     batched_shape.change_device(torch.device("cpu"))
     model.change_device(torch.device("cpu"))
     sampler.change_device(torch.device("cpu"))
@@ -207,17 +219,17 @@ def loocv():
         var_prior_trans = VAR_PRIOR_TRANS
         var_prior_rot = VAR_PRIOR_ROT
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
-            for l_ in range(len(meshes)):
+            for l_ in range(1, len(meshes)):
                 # for l_ in range(10):
                 meshes_ = copy.deepcopy(meshes)
                 target = meshes_[l_]
-                z_min, z_max = 184, 2
+                z_min, z_max = 876, 9
                 part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
                 del meshes_[l_]
                 if MODEL_TARGET_AWARE:
-                    model = create_target_aware_model(meshes_, DEVICE, target, part_target)
+                    model, fid, bc = create_target_aware_model(meshes_, DEVICE, target, part_target)
                 else:
-                    model = create_target_unaware_model(meshes_, target)
+                    model, fid, bc = create_target_unaware_model(meshes_, DEVICE, part_target)
                 shape = meshes_[0]
                 dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
                 observed = (dists < 1e-6).squeeze()
@@ -240,11 +252,21 @@ def loocv():
                                                 var_n=var_likelihood, d=ICP_D,
                                                 recalculation_period=ICP_RECALCULATION_PERIOD)
 
-                sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA,
-                                               BETA, correspondences=False, gamma=GAMMA, var_like=var_likelihood,
-                                               uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
-                                               var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
-                                               save_residuals=True)
+                if ASSUME_FIXED_CORRESPONDENCES:
+                    sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE,
+                                                   ALPHA, BETA,
+                                                   fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
+                                                   gamma=GAMMA, var_like=var_likelihood,
+                                                   uniform_pose_prior=UNIFORM_POSE_PRIOR,
+                                                   var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
+                                                   save_residuals=True)
+                else:
+                    sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE,
+                                                   ALPHA, BETA,
+                                                   fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
+                                                   uniform_pose_prior=UNIFORM_POSE_PRIOR,
+                                                   var_prior_trans=var_prior_trans,
+                                                   var_prior_rot=var_prior_rot, save_full_mesh_chain=True, save_residuals=True)
 
                 generator = torch.Generator(device=DEVICE)
                 for _ in tqdm(range(CHAIN_LENGTH)):
@@ -280,7 +302,7 @@ def loocv():
                 handler.save_target_avg(target, avg_var, l_, int(100 * percentage),
                                              int(100 * var_likelihood), save_html=True)
                 # Delete everything that is potentially located on the GPU
-                del analyser, avg_var, batched_shape, batched_target, dists, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
+                del analyser, avg_var, batched_shape, batched_target, bc, dists, fid, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
                 torch.cuda.empty_cache()
                 # Code to save further data
                 # chain_residual_dict = sampler.get_dict_chain_and_residuals()
@@ -324,9 +346,9 @@ def mcmc_task(gpu_id_, chunk_):
         part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
         del meshes_[l_]
         if MODEL_TARGET_AWARE:
-            model = create_target_aware_model(meshes_, device_, target, part_target)
+            model, fid, bc = create_target_aware_model(meshes_, device_, target, part_target)
         else:
-            model = create_target_unaware_model(meshes_, target)
+            model, fid, bc = create_target_unaware_model(meshes_, device_, part_target)
         shape = meshes_[0]
         dists = distance_to_closest_point(target.tensor_points.unsqueeze(-1), part_target.tensor_points, 1)
         observed = (dists < 1e-6).squeeze()
@@ -348,11 +370,17 @@ def mcmc_task(gpu_id_, chunk_):
                                         prob_trans, prob_rot, var_n=var_likelihood, d=ICP_D,
                                         recalculation_period=ICP_RECALCULATION_PERIOD)
 
-        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
-                                       correspondences=False, gamma=GAMMA, var_like=var_likelihood,
-                                       uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
-                                       var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
-                                       save_residuals=True)
+        if ASSUME_FIXED_CORRESPONDENCES:
+            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                           fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
+                                           gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
+                                           var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
+                                           save_residuals=True)
+        else:
+            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+                                           fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
+                                           uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
+                                           var_prior_rot=var_prior_rot, save_full_mesh_chain=True, save_residuals=True)
 
         generator = torch.Generator(device=device_)
         for _ in range(CHAIN_LENGTH):
@@ -386,7 +414,7 @@ def mcmc_task(gpu_id_, chunk_):
         handler.save_target_avg(target, avg_var, l_, int(100 * percentage), int(100 * var_likelihood), save_html=True)
 
         # Delete everything that is potentially located on the GPU
-        del analyser, avg_var, batched_shape, batched_target, dists, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
+        del analyser, avg_var, batched_shape, batched_target, bc, dists, fid, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target
         torch.cuda.empty_cache()
         # Code to save further data
         # chain_residual_dict = sampler.get_dict_chain_and_residuals()
@@ -404,10 +432,6 @@ if __name__ == "__main__":
             p = (Path.cwd().parent / Path(REL_PATH_MESH_DECIMATED)).glob('**/*')
             mesh_list = [f for f in p if f.is_file()]
             tasks = list(itertools.product(VAR_LIKELIHOOD_TERM, PERCENTAGES_OBSERVED_LENGTH, range(len(mesh_list))))
-            # tasks = [(a, b, c) for a, b, c in
-            #         itertools.product(VAR_LIKELIHOOD_TERM, PERCENTAGES_OBSERVED_LENGTH, range(len(mesh_list)))
-            #         if (b == 0.2 and (c + 2) % 4 == 0) or (b == 0.4 and (c + 1) % 4 == 0) or (
-            #         b == 0.6 and c % 4 == 0) or (b == 0.8 and (c + 3) % 4 == 0)]
             chunks = [tasks[i::NUM_GPUS] for i in range(NUM_GPUS)]
             processes = []
             for gpu_id, chunk in zip(GPU_IDENTIFIERS, chunks):
