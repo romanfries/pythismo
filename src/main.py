@@ -34,8 +34,8 @@ from src.visualization import MainVisualizer
 
 DECIMATE_MESHES = False
 RUN_ON_SCICORE_CLUSTER = False
-RUN_WHOLE_EXPERIMENT = True
-GENERATE_PLOTS = False
+RUN_WHOLE_EXPERIMENT = False
+GENERATE_PLOTS = True
 # Only relevant, if GENERATE_PLOTS is True. If True, plots are generated that show the average point wise
 # distances/variances as a function of an additional parameter, e.g., the variance used for evaluating the likelihood
 # term, for every observed percentage. If False, the average point wise distances/variances are plotted against the
@@ -47,38 +47,40 @@ if RUN_ON_SCICORE_CLUSTER:
 else:
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-NUM_GPUS = 1
+NUM_GPUS = 2
 GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
-REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated-1000"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/test-2"
+REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/unaware-no-reg"
 
 DISTAL_END = True
 ASSUME_FIXED_CORRESPONDENCES = False
-MODEL_TARGET_AWARE = True
-LAPLACIAN_TYPE = "none"
+MODEL_TARGET_AWARE = False
+LAPLACIAN_TYPE = "std"
 ALPHA = 1
-BETA = 0.3
+BETA = 1.5
+IDENTITY = 1.0
+LANDMARK_TOP, LANDMARK_BOTTOM = 2, 184
 
-BATCH_SIZE = 10
-CHAIN_LENGTH = 10000
+BATCH_SIZE = 45
+CHAIN_LENGTH = 45000
 DEFAULT_BURN_IN = 5000
-DECIMATION_TARGET = 1000
+DECIMATION_TARGET = 200
 
 MODEL_INFORMED_PROBABILITY = 0.5
 MODEL_RANDOM_PROBABILITY = 0.1
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-VAR_MOD_RANDOM = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
+VAR_MOD_RANDOM = torch.tensor([0.06, 0.12, 0.24], device=DEVICE)
 # VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
-VAR_MOD_INFORMED = torch.tensor([0.16, 0.32, 0.64], device=DEVICE)
+VAR_MOD_INFORMED = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
 # VAR_MOD_INFORMED = torch.tensor([0.12, 0.24, 0.48], device=DEVICE)
-VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
+VAR_TRANS = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
 # VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
 # Variance in radians
-VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
+VAR_ROT = torch.tensor([0.00125, 0.0025, 0.005], device=DEVICE)
 # VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
 PROB_MOD_RANDOM = PROB_MOD_INFORMED = PROB_TRANS = PROB_ROT = torch.tensor([0.2, 0.6, 0.2], device=DEVICE)
 
@@ -111,7 +113,7 @@ def plot():
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
     # handler.rename_files()
     data_dict = handler.read_all_statistics()
-    handler.generate_plots(4, data_dict, SEPARATE_PLOTS)
+    handler.generate_plots(30, data_dict, SEPARATE_PLOTS)
 
 
 def trial():
@@ -137,7 +139,7 @@ def trial():
     # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
     #     torch.max(target.tensor_points, dim=0)[1][2].item()
     # Manually determined landmarks
-    z_min, z_max = 876, 9
+    z_min, z_max = LANDMARK_BOTTOM, LANDMARK_TOP
     part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, obs, distal_end)
     del meshes[loo]
     if MODEL_TARGET_AWARE:
@@ -165,12 +167,12 @@ def trial():
                                     PROB_MOD_INFORMED, PROB_TRANS, PROB_ROT, var_n=var_likelihood, d=ICP_D,
                                     recalculation_period=ICP_RECALCULATION_PERIOD)
     if ASSUME_FIXED_CORRESPONDENCES:
-        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA, IDENTITY,
                                        fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
                                        gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
                                        var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot)
     else:
-        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+        sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA, IDENTITY,
                                        fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
                                        uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
                                        var_prior_rot=var_prior_rot)
@@ -219,11 +221,12 @@ def loocv():
         var_prior_trans = VAR_PRIOR_TRANS
         var_prior_rot = VAR_PRIOR_ROT
         for percentage in PERCENTAGES_OBSERVED_LENGTH:
-            for l_ in range(1, len(meshes)):
+            for l_ in range(len(meshes)):
+            # for l_ in range(1):
                 # for l_ in range(10):
                 meshes_ = copy.deepcopy(meshes)
                 target = meshes_[l_]
-                z_min, z_max = 876, 9
+                z_min, z_max = LANDMARK_BOTTOM, LANDMARK_TOP
                 part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
                 del meshes_[l_]
                 if MODEL_TARGET_AWARE:
@@ -254,7 +257,7 @@ def loocv():
 
                 if ASSUME_FIXED_CORRESPONDENCES:
                     sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE,
-                                                   ALPHA, BETA,
+                                                   ALPHA, BETA, IDENTITY,
                                                    fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
                                                    gamma=GAMMA, var_like=var_likelihood,
                                                    uniform_pose_prior=UNIFORM_POSE_PRIOR,
@@ -262,7 +265,7 @@ def loocv():
                                                    save_residuals=True)
                 else:
                     sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE,
-                                                   ALPHA, BETA,
+                                                   ALPHA, BETA, IDENTITY,
                                                    fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
                                                    uniform_pose_prior=UNIFORM_POSE_PRIOR,
                                                    var_prior_trans=var_prior_trans,
@@ -342,7 +345,7 @@ def mcmc_task(gpu_id_, chunk_):
         target = meshes_[l_]
         # z_min, z_max = torch.min(target.tensor_points, dim=0)[1][2].item(), \
         #    torch.max(target.tensor_points, dim=0)[1][2].item()
-        z_min, z_max = 184, 2
+        z_min, z_max = LANDMARK_BOTTOM, LANDMARK_TOP
         part_target, plane_normal, plane_origin = target.partial_shape(z_max, z_min, percentage, DISTAL_END)
         del meshes_[l_]
         if MODEL_TARGET_AWARE:
@@ -371,13 +374,13 @@ def mcmc_task(gpu_id_, chunk_):
                                         recalculation_period=ICP_RECALCULATION_PERIOD)
 
         if ASSUME_FIXED_CORRESPONDENCES:
-            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA, IDENTITY,
                                            fixed_correspondences=True, triangles=fid, barycentric_coords=bc,
                                            gamma=GAMMA, var_like=var_likelihood, uniform_pose_prior=UNIFORM_POSE_PRIOR,
                                            var_prior_trans=var_prior_trans, var_prior_rot=var_prior_rot, save_full_mesh_chain=True,
                                            save_residuals=True)
         else:
-            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA,
+            sampler = PDMMetropolisSampler(model, proposal, batched_shape, batched_target, LAPLACIAN_TYPE, ALPHA, BETA, IDENTITY,
                                            fixed_correspondences=False, gamma=GAMMA, var_like=var_likelihood,
                                            uniform_pose_prior=UNIFORM_POSE_PRIOR, var_prior_trans=var_prior_trans,
                                            var_prior_rot=var_prior_rot, save_full_mesh_chain=True, save_residuals=True)

@@ -131,7 +131,7 @@ def unnormalised_log_posterior_curvature(distances, inv_cov_operator, parameters
     return log_likelihoods + log_prior + log_translation + log_rotation
 
 
-def get_laplacian(type, verts, faces, edges, alpha, beta, dev):
+def get_laplacian(type, verts, faces, edges, alpha, beta, id_mult, dev):
     size = verts.size(0)
     identity = torch.diag(torch.ones(size, device=dev))
     if type == "none":
@@ -165,8 +165,8 @@ def get_laplacian(type, verts, faces, edges, alpha, beta, dev):
         graph_laplacian = graph_laplacian / torch.norm(graph_laplacian, p=2, dim=1, keepdim=True)
         graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = 1.0
 
-    prec = torch.matrix_power((0.5 * identity + beta * graph_laplacian), alpha)
-    eigvals = (1.0 / (torch.pow(0.5 + beta * torch.linalg.eigh(graph_laplacian)[0], alpha) + 1e-6))
+    prec = torch.matrix_power((id_mult * identity + beta * graph_laplacian), alpha)
+    eigvals = (1.0 / (torch.pow(id_mult + beta * torch.linalg.eigh(graph_laplacian)[0], alpha) + 1e-6))
     # prec *= eigvals.mean()
     normalization = -0.5 * torch.log(eigvals / eigvals.mean() + 1e-6).sum(-1) - (size / 2) * torch.log(
         torch.tensor(2 * torch.pi, device=dev))
@@ -174,7 +174,7 @@ def get_laplacian(type, verts, faces, edges, alpha, beta, dev):
 
 
 class PDMMetropolisSampler:
-    def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, fixed_correspondences=True,
+    def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, id_fact=0.5, fixed_correspondences=True,
                  triangles=None, barycentric_coords=None, gamma=50.0, var_like=1.0, var_prior_mod=1.0,
                  uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005, save_full_mesh_chain=False,
                  save_residuals=False):
@@ -268,8 +268,9 @@ class PDMMetropolisSampler:
         self.laplacian_type = laplacian_type
         self.alpha = alpha
         self.beta = beta
+        self.id_fact = id_fact
         self.inv_cov_operator, eigvals, det = get_laplacian(self.laplacian_type, self.target_points[:, :, 0],
-                                                            self.target.cells[0].data, edges, self.alpha, self.beta,
+                                                            self.target.cells[0].data, edges, self.alpha, self.beta, self.id_fact,
                                                             self.dev)
 
         self.posterior = None
