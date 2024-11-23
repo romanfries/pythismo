@@ -33,9 +33,9 @@ from src.visualization import MainVisualizer
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
 DECIMATE_MESHES = False
-RUN_ON_SCICORE_CLUSTER = False
-RUN_WHOLE_EXPERIMENT = False
-GENERATE_PLOTS = True
+RUN_ON_SCICORE_CLUSTER = True
+RUN_WHOLE_EXPERIMENT = True
+GENERATE_PLOTS = False
 # Only relevant, if GENERATE_PLOTS is True. If True, plots are generated that show the average point wise
 # distances/variances as a function of an additional parameter, e.g., the variance used for evaluating the likelihood
 # term, for every observed percentage. If False, the average point wise distances/variances are plotted against the
@@ -47,17 +47,17 @@ if RUN_ON_SCICORE_CLUSTER:
 else:
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-NUM_GPUS = 2
+NUM_GPUS = 1
 GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/unaware-no-reg"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/xsigma-distal-100"
 
 DISTAL_END = True
 ASSUME_FIXED_CORRESPONDENCES = False
-MODEL_TARGET_AWARE = False
-LAPLACIAN_TYPE = "std"
+MODEL_TARGET_AWARE = True
+LAPLACIAN_TYPE = "none"
 ALPHA = 1
 BETA = 1.5
 IDENTITY = 1.0
@@ -73,14 +73,14 @@ MODEL_RANDOM_PROBABILITY = 0.1
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-VAR_MOD_RANDOM = torch.tensor([0.06, 0.12, 0.24], device=DEVICE)
+VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
 # VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
-VAR_MOD_INFORMED = torch.tensor([0.1, 0.2, 0.4], device=DEVICE)
+VAR_MOD_INFORMED = torch.tensor([0.11, 0.22, 0.44], device=DEVICE)
 # VAR_MOD_INFORMED = torch.tensor([0.12, 0.24, 0.48], device=DEVICE)
 VAR_TRANS = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
 # VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
 # Variance in radians
-VAR_ROT = torch.tensor([0.00125, 0.0025, 0.005], device=DEVICE)
+VAR_ROT = torch.tensor([0.001, 0.002, 0.004], device=DEVICE)
 # VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
 PROB_MOD_RANDOM = PROB_MOD_INFORMED = PROB_TRANS = PROB_ROT = torch.tensor([0.2, 0.6, 0.2], device=DEVICE)
 
@@ -89,8 +89,8 @@ UNIFORM_POSE_PRIOR = False
 VAR_PRIOR_TRANS = 5.0
 VAR_PRIOR_ROT = 0.006
 
-VAR_LIKELIHOOD_TERM = [1.0]
-GAMMA = 50.0
+VAR_LIKELIHOOD_TERM = [0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 2.0, 2.5, 3.0]
+GAMMA = 100.0
 
 ICP_D = 1.0
 ICP_RECALCULATION_PERIOD = 1000
@@ -124,7 +124,7 @@ def trial():
     loo = 0
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
     obs = 0.2
-    var_likelihood = 1.0
+    var_likelihood = 0.4
     distal_end = True
 
     var_mod_random = math.sqrt(var_likelihood) * VAR_MOD_RANDOM
@@ -412,7 +412,7 @@ def mcmc_task(gpu_id_, chunk_):
                                        part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood))
         mean_dist_c_map = torch.tensor(data['accuracy']['mean_dist_corr_map'])
         avg_var = torch.tensor(data['accuracy']['var']).mean(dim=1)
-        handler.save_target_map_dist(target, mean_dist_c_map, l_, int(100 * percentage), int(100 * var_likelihood),
+        handler.save_target_map_dist(target, mean_dist_c_map, l_, 15, int(100 * var_likelihood),
                                      save_html=True)
         handler.save_target_avg(target, avg_var, l_, int(100 * percentage), int(100 * var_likelihood), save_html=True)
 
@@ -435,6 +435,7 @@ if __name__ == "__main__":
             p = (Path.cwd().parent / Path(REL_PATH_MESH_DECIMATED)).glob('**/*')
             mesh_list = [f for f in p if f.is_file()]
             tasks = list(itertools.product(VAR_LIKELIHOOD_TERM, PERCENTAGES_OBSERVED_LENGTH, range(len(mesh_list))))
+            # tasks = [(1.0, 0.2, 4)]
             chunks = [tasks[i::NUM_GPUS] for i in range(NUM_GPUS)]
             processes = []
             for gpu_id, chunk in zip(GPU_IDENTIFIERS, chunks):

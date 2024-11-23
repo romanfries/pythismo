@@ -1,1 +1,1 @@
-from .PointDistribution import distance_to_closest_point, PointDistributionModel, BatchedPointDistributionModel
+from .PointDistribution import distance_to_closest_point, get_parameters, PointDistributionModel, BatchedPointDistributionModel

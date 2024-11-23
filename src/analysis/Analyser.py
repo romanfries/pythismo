@@ -5,7 +5,9 @@ import plotly.graph_objects as go
 import torch
 
 import pytorch3d.loss
-from src.mesh import get_transformation_matrix_from_euler_angles
+from src.mesh import get_transformation_matrix_from_euler_angles, get_transformation_matrix_from_rot_and_trans, BatchTorchMesh
+from src.model import get_parameters
+from src.registration import ProcrustesAnalyser, PCAMode
 
 
 def acf(chain, max_lag=100, b_int=100, b_max=2000):
@@ -221,6 +223,30 @@ class ChainAnalyser:
         self.residuals_n = self.residuals_n[:, ~not_converged, :]
         return not_converged
 
+    def error_analysis(self):
+        batched_target = BatchTorchMesh(self.target, 'target', self.proposal.dev, batch_size=1)
+        batched_mean = batched_target.copy()
+        batched_mean.set_points(self.model.mean.reshape((self.num_points, 3)).unsqueeze(-1))
+
+        map_indices = (torch.div(torch.argmax(self.posterior[:, self.burn_in:]), (self.chain_length - self.burn_in),
+                                 rounding_mode="trunc")).item(), (
+                torch.argmax(self.posterior[:, self.burn_in:]) % (self.chain_length - self.burn_in)).item()
+        map_points = self.mesh_chain[:, :, map_indices[0], map_indices[1]]
+        map_params = self.param_chain[:, map_indices[0], map_indices[1]]
+
+        rotation_centre = self.sampler.batch_mesh.rotation_centre[:, 0]
+        batched_map = batched_target.copy()
+        batched_map.rotation_centre = rotation_centre.unsqueeze(-1)
+        batched_map.set_points(self.model.get_points_from_parameters(map_params[:-6]).unsqueeze(-1))
+        batched_map.apply_rotation(map_params[-3:].unsqueeze(-1))
+        batched_map.apply_translation(map_params[-6:-3].unsqueeze(-1))
+
+        diff = batched_map.tensor_points.squeeze() - map_points
+
+        proc = ProcrustesAnalyser(batched_target, batched_mean, mode=PCAMode.BATCHED)
+        rot, trans = proc.procrustes_alignment()
+        batched_target.apply_transformation(get_transformation_matrix_from_rot_and_trans(rot.permute(1, 2, 0), trans.permute(1, 0)))
+
     def data_to_json(self, ix, loo, obs, additional_param):
         """
         Provides all values calculated in this class in .json format.
@@ -238,6 +264,7 @@ class ChainAnalyser:
         :return: String containing the data in .json format.
         :rtype: str
         """
+        # self.error_analysis()
         not_converged = self.simple_convergence_check()
         # not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.param_chain.device)
         means, mins, maxs, vars = self.posterior_analytics()

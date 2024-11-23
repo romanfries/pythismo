@@ -73,7 +73,7 @@ class TorchMeshGpu(Mesh):
         # TODO: There are many operations that don't allow the adjustment of the facet normals, e.g., mesh
         #  simplification and mesh slicing. (They are deleted instead.)
         # TODO: Only the 'set_points' method allows adjustment of the rotation centre. Add this possibility for
-        #  'apply_transmation', 'apply_rotation' and 'apply_translation'.
+        #  'apply_translation', 'apply_rotation' and 'apply_translation'.
         # possibly prone to errors
         copy = mesh.copy()
         arg_dict = vars(copy)

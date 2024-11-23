@@ -583,12 +583,12 @@ class DataHandler:
             }
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -599,7 +599,7 @@ class DataHandler:
 
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
@@ -621,19 +621,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='mean_dist_c_post_all', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
@@ -658,12 +658,12 @@ class DataHandler:
             }
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -674,7 +674,7 @@ class DataHandler:
 
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average variance of the points $[\mathrm{mm}^{2}]$')
             plt.title(
@@ -700,12 +700,12 @@ class DataHandler:
             }
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -716,7 +716,7 @@ class DataHandler:
 
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
@@ -738,19 +738,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='mean_dist_c_map_all', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
@@ -776,12 +776,12 @@ class DataHandler:
             }
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -792,7 +792,7 @@ class DataHandler:
 
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
@@ -814,19 +814,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='squared_c_post_all', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
@@ -852,12 +852,12 @@ class DataHandler:
             }
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -868,7 +868,7 @@ class DataHandler:
 
             sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
@@ -890,19 +890,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='squared_c_map_all', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
@@ -922,19 +922,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='hausdorff_map', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average Hausdorff distances between MAP estimate and true target $[\mathrm{mm}]$')
             plt.title(
@@ -953,19 +953,19 @@ class DataHandler:
             })
 
             obs_mapping = {
-                5: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                10: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                20: r'$\mathbf{I}$',
-                40: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                80: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                10: 50,
+                20: 100,
+                30: 125,
+                40: 150,
+                50: 175,
+                60: 200
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
             plt.figure(figsize=(20, 10), dpi=300)
             sns.boxplot(x='obs', y='hausdorff_post', data=df_small, color='skyblue')
 
-            plt.xlabel('Observed portion of the length of the femur [%]')
+            plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
             plt.ylabel(
                 r'Average Hausdorff distances between all samples and their corresponding true target $[\mathrm{mm}]$')
             plt.title(
@@ -997,19 +997,15 @@ class DataHandler:
                     'Femur reconstruction errors using parallel MCMC sampling (30 chains with 40000 samples each) '
                     'split by reconstructed shape')
                 plt.ylim(0, 40)
-                plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+                plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
                 plt.ylabel(r'Average distance to the corresponding point on the reconstruction surface (utilising'
                             'given correspondences) $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
                 if i == 45:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 2
+                    x_labels = [50, 100, 125, 150, 175, 200] * 2
                 else:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 5
+                    x_labels = [50, 100, 125, 150, 175, 200] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
@@ -1048,19 +1044,15 @@ class DataHandler:
                     'Femur reconstruction errors using parallel MCMC sampling (MAP sample selected) split by '
                     'reconstructed shape')
                 plt.ylim(0, 40)
-                plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+                plt.xlabel(r'Weighting factor $\gamma$ of the likelihood term')
                 plt.ylabel(r'Average distance to the corresponding point on the reconstruction surface (utilising'
                             'given correspondences) $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
                 if i == 45:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 2
+                    x_labels = [50, 100, 125, 150, 175, 200] * 2
                 else:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 5
+                    x_labels = [50, 100, 125, 150, 175, 200] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
