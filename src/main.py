@@ -33,7 +33,7 @@ from src.visualization import MainVisualizer
 # https://stackoverflow.com/questions/62304087/installing-pytorch3d-fails-with-anaconda-and-pip-on-windows-10
 
 DECIMATE_MESHES = False
-RUN_ON_SCICORE_CLUSTER = True
+RUN_ON_SCICORE_CLUSTER = False
 RUN_WHOLE_EXPERIMENT = True
 GENERATE_PLOTS = False
 # Only relevant, if GENERATE_PLOTS is True. If True, plots are generated that show the average point wise
@@ -52,19 +52,19 @@ GPU_IDENTIFIERS = list(range(NUM_GPUS))
 
 REL_PATH_MESH = "datasets/femur-data/project-data/registered"
 REL_PATH_MESH_DECIMATED = "datasets/femur-data/project-data/registered-decimated"
-REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/xsigma-distal-100"
+REL_PATH_INPUT_OUTPUT = "datasets/femur-data/project-data/output/gamma-200-una-std-reg-5"
 
 DISTAL_END = True
 ASSUME_FIXED_CORRESPONDENCES = False
-MODEL_TARGET_AWARE = True
+MODEL_TARGET_AWARE = False
 LAPLACIAN_TYPE = "none"
 ALPHA = 1
-BETA = 1.5
+BETA = 0.8
 IDENTITY = 1.0
 LANDMARK_TOP, LANDMARK_BOTTOM = 2, 184
 
-BATCH_SIZE = 45
-CHAIN_LENGTH = 45000
+BATCH_SIZE = 10
+CHAIN_LENGTH = 15000
 DEFAULT_BURN_IN = 5000
 DECIMATION_TARGET = 200
 
@@ -73,24 +73,24 @@ MODEL_RANDOM_PROBABILITY = 0.1
 TRANSLATION_PROBABILITY = 0.2
 ROTATION_PROBABILITY = 0.2
 
-VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
+VAR_MOD_RANDOM = torch.tensor([0.01, 0.02, 0.04], device=DEVICE)
 # VAR_MOD_RANDOM = torch.tensor([0.05, 0.1, 0.2], device=DEVICE)
-VAR_MOD_INFORMED = torch.tensor([0.11, 0.22, 0.44], device=DEVICE)
+VAR_MOD_INFORMED = torch.tensor([0.04, 0.08, 0.16], device=DEVICE)
 # VAR_MOD_INFORMED = torch.tensor([0.12, 0.24, 0.48], device=DEVICE)
-VAR_TRANS = torch.tensor([0.15, 0.3, 0.6], device=DEVICE)
+VAR_TRANS = torch.tensor([0.08, 0.16, 0.32], device=DEVICE)
 # VAR_TRANS = torch.tensor([0.25, 0.5, 1.0], device=DEVICE)
 # Variance in radians
-VAR_ROT = torch.tensor([0.001, 0.002, 0.004], device=DEVICE)
+VAR_ROT = torch.tensor([0.0007, 0.0014, 0.0028], device=DEVICE)
 # VAR_ROT = torch.tensor([0.002, 0.004, 0.008], device=DEVICE)
 PROB_MOD_RANDOM = PROB_MOD_INFORMED = PROB_TRANS = PROB_ROT = torch.tensor([0.2, 0.6, 0.2], device=DEVICE)
 
 UNIFORM_POSE_PRIOR = False
 # These two parameters are irrelevant when assuming a uniform pose prior
-VAR_PRIOR_TRANS = 5.0
-VAR_PRIOR_ROT = 0.006
+VAR_PRIOR_TRANS = 3.0
+VAR_PRIOR_ROT = 0.005
 
-VAR_LIKELIHOOD_TERM = [0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 2.0, 2.5, 3.0]
-GAMMA = 100.0
+VAR_LIKELIHOOD_TERM = [1.0]
+GAMMA = 200.0
 
 ICP_D = 1.0
 ICP_RECALCULATION_PERIOD = 1000
@@ -113,7 +113,93 @@ def plot():
     handler = DataHandler(REL_PATH_INPUT_OUTPUT)
     # handler.rename_files()
     data_dict = handler.read_all_statistics()
-    handler.generate_plots(30, data_dict, SEPARATE_PLOTS)
+    # Insert list of strings which indicate the chains that have not converged
+    chains_to_remove = ['''
+    0: 37
+    6: 11, 13, 15, 43
+    9: 9, 33
+    10: 3
+    11: 27
+    13: 27
+    14: 24, 30, 31
+    15: 37
+    16: 10, 12, 16, 17, 27, 35
+    17: 1, 16
+    18: 8, 13, 22
+    20: 35
+    21: 11
+    24: 0, 6, 7, 12, 17, 20, 44
+    26: 28
+    27: 1, 15, 22
+    28: 9, 22, 28, 41, 42
+    29: 19, 30, 37
+    30: 17
+    33: 26
+    34: 13
+    35: 1, 20, 24
+    36: 2, 4, 8, 9, 12, 15, 27, 33, 35, 41
+    37: 16
+    38: 1, 10, 11, 13, 15, 17, 18, 20, 21, 29, 33, 34, 38, 40, 43
+    40: 8, 33
+    41: 25
+    42: 1, 8, 12, 14, 17, 20, 22, 23, 27, 33
+    45: 23, 27''', '''
+    0: 14
+    1: 11
+    2: 3
+    3: 38
+    7: 13, 14, 23, 34, 35
+    9: 17, 18
+    11: 2, 4, 7, 10
+    13: 8, 26, 34
+    14: 38
+    16: 4, 36
+    17: 5
+    18: 1, 12, 22, 25
+    20: 8
+    27: 27, 36
+    28: 8, 9, 19, 31
+    30: 21
+    33: 38
+    36: 6, 7, 9, 13, 20, 25, 31, 38, 41
+    37: 36
+    38: 15, 40
+    39: 5
+    40: 7
+    42: 21''', '''
+    6: 7
+    9: 36
+    10: 29
+    11: 6, 28
+    13: 8, 20
+    14: 28
+    16: 13, 19, 20, 22, 27, 29, 35, 37, 38
+    19: 1, 34
+    20: 33
+    21: 31
+    24: 19
+    25: 8, 17
+    27: 24, 25
+    29: 3, 13
+    30: 3
+    34: 2
+    35: 2, 15, 30, 32, 33, 34, 35, 36, 41, 43
+    38: 15, 22, 27, 30
+    42: 22''', '''
+    0: 29
+    11: 5, 41
+    16: 23
+    22: 26
+    30: 14
+    32: 2
+    33: 3, 35
+    34: 13
+    37: 41
+    38: 34''', '''
+    16: 9
+    26: 7''', '''
+    ''']
+    handler.generate_plots(30, data_dict, chains_to_remove, add_param_available=SEPARATE_PLOTS)
 
 
 def trial():
@@ -124,7 +210,7 @@ def trial():
     loo = 0
     # obs = PERCENTAGES_OBSERVED_LENGTH[torch.randint(0, len(PERCENTAGES_OBSERVED_LENGTH), (1,)).item()]
     obs = 0.2
-    var_likelihood = 0.4
+    var_likelihood = 1.0
     distal_end = True
 
     var_mod_random = math.sqrt(var_likelihood) * VAR_MOD_RANDOM
@@ -403,18 +489,18 @@ def mcmc_task(gpu_id_, chunk_):
 
         analyser = ChainAnalyser(sampler, proposal, model, target, observed, sampler.full_chain,
                                  default_burn_in=DEFAULT_BURN_IN)
-        data = analyser.data_to_json(10, l_, int(100 * percentage), int(100 * var_likelihood))
-        traceplots = analyser.get_traceplots(l_, int(100 * percentage), int(100 * var_likelihood))
+        data = analyser.data_to_json(10, l_, 20, int(100 * var_likelihood))
+        traceplots = analyser.get_traceplots(l_, 20, int(100 * var_likelihood))
         meshes_.insert(l_, target)
-        handler.write_statistics(data, l_, int(100 * percentage), int(100 * var_likelihood))
-        handler.write_traceplots(traceplots, l_, int(100 * percentage), int(100 * var_likelihood))
+        handler.write_statistics(data, l_, 20, int(100 * var_likelihood))
+        handler.write_traceplots(traceplots, l_, 20, int(100 * var_likelihood))
         handler.save_posterior_samples(analyser.mesh_chain[:, :, :, analyser.burn_in:], batched_shape,
-                                       part_target, 20, l_, int(100 * percentage), int(100 * var_likelihood))
+                                       part_target, 20, l_, 20, int(100 * var_likelihood))
         mean_dist_c_map = torch.tensor(data['accuracy']['mean_dist_corr_map'])
         avg_var = torch.tensor(data['accuracy']['var']).mean(dim=1)
-        handler.save_target_map_dist(target, mean_dist_c_map, l_, 15, int(100 * var_likelihood),
+        handler.save_target_map_dist(target, mean_dist_c_map, l_, 20, int(100 * var_likelihood),
                                      save_html=True)
-        handler.save_target_avg(target, avg_var, l_, int(100 * percentage), int(100 * var_likelihood), save_html=True)
+        handler.save_target_avg(target, avg_var, l_, 20, int(100 * var_likelihood), save_html=True)
 
         # Delete everything that is potentially located on the GPU
         del analyser, avg_var, batched_shape, batched_target, bc, dists, fid, mean_dist_c_map, model, observed, part_target, plane_normal, plane_origin, proposal, sampler, shape, starting_params, starting_rotation, starting_translation, target

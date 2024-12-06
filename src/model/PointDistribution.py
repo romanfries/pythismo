@@ -240,7 +240,7 @@ def unnormalised_posterior(differences, parameters, sigma_lm, sigma_prior):
 
 
 class PointDistributionModel:
-    def __init__(self, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None, rank=None,
+    def __init__(self, model_target_aware=False, read_in=False, mean_and_cov=False, meshes=None, mean=None, cov=None, model=None, rank=None,
                  dev=None, tol=10e-6):
         """
         Class that defines and creates a point distribution model (PDM).
@@ -269,6 +269,7 @@ class PointDistributionModel:
         be specified explicitly in the case of ‘read_in=True’. Otherwise, the device is derived from the input data.
         :type dev: torch.device
         """
+        self.model_target_aware = model_target_aware
         self.read_in = read_in
         self.mean_and_cov = mean_and_cov
         if self.read_in:

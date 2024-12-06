@@ -592,13 +592,13 @@ def create_target_aware_model(meshes, dev, target, part_target):
 
     # Estimate the correspondences using target sampling
     _, _, fid, bc = estimate_correspondences(part_target, mean_shape, dev)
-    model = PointDistributionModel(meshes=meshes)
+    model = PointDistributionModel(model_target_aware=True, meshes=meshes)
     return model, fid, bc
 
 
 def create_target_unaware_model(meshes, dev, target):
     ProcrustesAnalyser(meshes).generalised_procrustes_alignment()
-    model = PointDistributionModel(meshes=meshes)
+    model = PointDistributionModel(model_target_aware=False, meshes=meshes)
     mean_shape = meshes[0].copy()
     mean_shape.set_points(model.get_mean_points(), adjust_rotation_centre=True)
     ICPAnalyser([target, mean_shape]).icp()

@@ -238,14 +238,38 @@ class ChainAnalyser:
         batched_map = batched_target.copy()
         batched_map.rotation_centre = rotation_centre.unsqueeze(-1)
         batched_map.set_points(self.model.get_points_from_parameters(map_params[:-6]).unsqueeze(-1))
+        map_pose_free = batched_map.tensor_points
         batched_map.apply_rotation(map_params[-3:].unsqueeze(-1))
         batched_map.apply_translation(map_params[-6:-3].unsqueeze(-1))
+        map_returned = batched_map.tensor_points
 
         diff = batched_map.tensor_points.squeeze() - map_points
+        full_error = torch.norm((map_returned - batched_target.tensor_points).squeeze(), dim=1)
 
-        proc = ProcrustesAnalyser(batched_target, batched_mean, mode=PCAMode.BATCHED)
-        rot, trans = proc.procrustes_alignment()
-        batched_target.apply_transformation(get_transformation_matrix_from_rot_and_trans(rot.permute(1, 2, 0), trans.permute(1, 0)))
+        proc_map = ProcrustesAnalyser(batched_map, batched_target, mode=PCAMode.BATCHED)
+        rot, trans = proc_map.procrustes_alignment()
+        batched_map.apply_transformation(get_transformation_matrix_from_rot_and_trans(rot.permute(1, 2, 0), trans.permute(1, 0)))
+        map_aligned = batched_map.tensor_points
+        pose_error = torch.norm((map_returned - map_aligned).squeeze(), dim=1)
+        pose_error_2 = torch.norm((map_returned - map_pose_free).squeeze(), dim=1)
+
+        best_params = get_parameters((batched_target.tensor_points - batched_mean.tensor_points).reshape((-1, 1)),
+                                     self.model.components)
+        best_reconstruction = (batched_mean.tensor_points.squeeze().reshape((-1, 1)) + self.model.components @ best_params).reshape((-1, 3))
+        orthogonal_error = torch.norm(best_reconstruction - batched_target.tensor_points.squeeze(), dim=1)
+
+        if not self.model.model_target_aware:
+            proc_mean = ProcrustesAnalyser(batched_mean, batched_target, mode=PCAMode.BATCHED)
+            rot, trans = proc_mean.procrustes_alignment()
+            batched_mean.apply_transformation(get_transformation_matrix_from_rot_and_trans(rot.permute(1, 2, 0), trans.permute(1, 0)))
+            self.model.mean = batched_mean.tensor_points.squeeze()
+            self.model.components = (self.model.components.reshape((-1, 3, self.num_parameters)).permute(2, 0, 1) @ rot.permute(0, 2, 1)).permute(1, 2, 0).reshape((3 * self.num_points, self.num_parameters))
+
+            best_params = get_parameters((batched_target.tensor_points - batched_mean.tensor_points).reshape((-1, 1)), self.model.components)
+            best_reconstruction = (batched_mean.tensor_points.squeeze().reshape((-1, 1)) + self.model.components @ best_params).reshape((-1, 3))
+
+        model_error = torch.norm(best_reconstruction - map_pose_free.squeeze(), dim=1)
+        return full_error, model_error, pose_error, pose_error_2, orthogonal_error
 
     def data_to_json(self, ix, loo, obs, additional_param):
         """
@@ -264,9 +288,9 @@ class ChainAnalyser:
         :return: String containing the data in .json format.
         :rtype: str
         """
-        # self.error_analysis()
-        not_converged = self.simple_convergence_check()
-        # not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.param_chain.device)
+        self.error_analysis()
+        # not_converged = self.simple_convergence_check()
+        not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.param_chain.device)
         means, mins, maxs, vars = self.posterior_analytics()
         rhat = self.rhat(ix=ix)
         ess = self.ess(ix=ix)
