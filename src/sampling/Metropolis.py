@@ -166,10 +166,10 @@ def get_laplacian(type, verts, faces, edges, alpha, beta, id_mult, dev):
         graph_laplacian[torch.arange(graph_laplacian.size(0)), torch.arange(graph_laplacian.size(0))] = 1.0
 
     prec = torch.matrix_power((id_mult * identity + beta * graph_laplacian), alpha)
-    eigvals = (1.0 / (torch.pow(id_mult + beta * torch.linalg.eigh(graph_laplacian)[0], alpha) + 1e-6))
-    # prec *= eigvals.mean()
-    normalization = -0.5 * torch.log(eigvals / eigvals.mean() + 1e-6).sum(-1) - (size / 2) * torch.log(
-        torch.tensor(2 * torch.pi, device=dev))
+    eigvals = (1.0 / (torch.pow(id_mult + beta * torch.linalg.eigh(graph_laplacian)[0], alpha)))
+    prec *= eigvals.mean()
+    eigvals = (1.0 / eigvals) * eigvals.mean()
+    normalization = -0.5 * torch.log(eigvals).sum(-1) - (size / 2) * torch.log(torch.tensor(2 * torch.pi, device=dev))
     return prec, eigvals, normalization
 
 
@@ -177,7 +177,7 @@ class PDMMetropolisSampler:
     def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, id_fact=0.5, fixed_correspondences=True,
                  triangles=None, barycentric_coords=None, gamma=50.0, var_like=1.0, var_prior_mod=1.0,
                  uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005, save_full_mesh_chain=False,
-                 save_residuals=False):
+                 save_residuals=False, variances_on_the_fly=False, default_burn_in=5000):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -289,6 +289,20 @@ class PDMMetropolisSampler:
         self.save_residuals = save_residuals
         self.residuals_c = []
         self.residuals_n = []
+        self.variances_on_the_fly = variances_on_the_fly
+        if self.variances_on_the_fly:
+            self.variances = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
+            self.old_mean_points = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
+            self.mean_points = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
+            self.mean_of_means = torch.zeros((self.model.num_points, 3, 1), device=self.dev)
+            self.sum_between = torch.zeros((self.model.num_points, 3), device=self.dev)
+            self.between = torch.zeros((self.model.num_points, 3), device=self.dev)
+            self.counter = 0
+        else:
+            self.variances = None
+        # Only needs to be used if the variances are to be calculated on the fly.
+        self.burn_in = default_burn_in
+        self.closed = False
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -299,7 +313,12 @@ class PDMMetropolisSampler:
         :param parameter_proposal_type: Specifies which parameters (model, translation or rotation) are to be drawn.
         :type parameter_proposal_type: ParameterProposalType
         """
-        self.proposal.propose(parameter_proposal_type)
+        if not self.closed:
+            self.proposal.propose(parameter_proposal_type)
+        else:
+            warnings.warn("Warning: Sampling has already ended for this Metropolis instance. No new parameter values "
+                          "can be proposed.", UserWarning)
+            return
 
     def update_mesh(self, parameter_proposal_type: ParameterProposalType):
         """
@@ -420,6 +439,21 @@ class PDMMetropolisSampler:
             residual_c, residual_n = self.get_residual(full_target)
             self.residuals_c.append(residual_c)
             self.residuals_n.append(residual_n)
+        if self.variances_on_the_fly:
+            self.counter += 1
+            if self.counter > self.burn_in:
+                counter_adjusted = self.counter - self.burn_in
+                self.old_mean_points = self.mean_points
+                self.mean_points = self.mean_points + ((self.points - self.mean_points) / counter_adjusted)
+
+                # within
+                self.variances = self.variances + (self.points - self.old_mean_points) * (self.points - self.mean_points)
+
+                # between
+                delta = self.mean_points - self.mean_of_means
+                self.mean_of_means = self.mean_of_means + torch.cumsum((delta / self.batch_size), dim=2)[:, :, -1:]
+                self.sum_between = self.sum_between + torch.cumsum(delta * (self.mean_points - self.mean_of_means), dim=2)[:, :, -1]
+                self.between = (counter_adjusted / float(self.batch_size - 1)) * self.sum_between
 
         if parameter_proposal_type == ParameterProposalType.MODEL_INFORMED:
             self.accepted_par += decider
@@ -550,6 +584,11 @@ class PDMMetropolisSampler:
             return {'res_corr': self.residuals_c, 'res_clp': self.residuals_n}
         else:
             warnings.warn("Warning: Chains and residuals were not saved.", UserWarning)
+
+    def close(self):
+        self.closed = True
+        self.variances = (self.variances / (self.counter - 1)).mean(dim=1)
+        self.between = self.between.mean(dim=1)
 
 
 def create_target_aware_model(meshes, dev, target, part_target):

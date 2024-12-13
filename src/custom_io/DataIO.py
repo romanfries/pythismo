@@ -35,9 +35,7 @@ def process_mask(data, mask, i, j):
         cols = [col.strip() for col in cols if col.strip()]
         cols = [int(col) for col in cols]
 
-        if number > 43:
-            row = i + j * (number - 3)
-        elif number > 23:
+        if number > 23:
             row = i + j * (number - 2)
         elif number > 4:
             row = i + j * (number - 1)
@@ -66,14 +64,15 @@ class DataHandler:
 
     def rename_files(self, case=1):
         # TODO: Write the method properly by defining the new name(s) as an input parameter
-        for file_path in self.statistics_dir.glob('mcmc_*_63_100.json'):
+        for file_path in self.statistics_dir.glob('mcmc_*_26_100.json'):
             parts = file_path.stem.split('_')
             xx = parts[1]
+            yy = parts[2]
 
             if len(xx) == 1:
                 xx = '0' + xx
 
-            new_filename = f'mcmc_{xx}_63_100.json'
+            new_filename = f'mcmc_{xx}_26_100.json'
             new_file_path = file_path.with_name(new_filename)
             file_path.rename(new_file_path)
 
@@ -290,6 +289,7 @@ class DataHandler:
         return data
 
     def save_posterior_samples(self, chain, mesh, target, num_samples, loo, obs, additional_param, save_html=False):
+        # TODO: Implement in case only the parameter chain is available.
         num_points = mesh.num_points
         num_faces = mesh.cells[0].data.size(0)
         _, _, batch_size, chain_length = chain.shape
@@ -442,7 +442,7 @@ class DataHandler:
             output_file = dir / output_filename
             pio.write_image(traceplot, output_file)
 
-    def generate_plots(self, num_chains_select, data_dict=None, chains_to_remove=None, num_categories=6, add_param_available=False):
+    def generate_plots(self, num_chains_select, data_dict=None, chains_to_remove=None, num_categories=9, add_param_available=False):
         # Needs to be adjusted depending on the experiments performed
         if data_dict is None:
             data_dict = self.read_all_statistics()
@@ -620,12 +620,15 @@ class DataHandler:
             }
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -641,7 +644,7 @@ class DataHandler:
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             # plt.xticks(custom_ticks, custom_labels)
@@ -658,12 +661,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -675,7 +681,7 @@ class DataHandler:
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "post_dist.png"
@@ -695,12 +701,15 @@ class DataHandler:
             }
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -715,9 +724,9 @@ class DataHandler:
             plt.ylabel(
                 r'Average variance of the points $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
-            plt.ylim(0, 150)
+            plt.ylim(0, 20)
             plt.tight_layout()
             filename = "var_split.png"
             png_plot_file = self.plot_dir / filename
@@ -737,12 +746,15 @@ class DataHandler:
             }
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -758,7 +770,7 @@ class DataHandler:
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             # plt.xticks(custom_ticks, custom_labels)
@@ -775,12 +787,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -792,7 +807,7 @@ class DataHandler:
                 r'Average distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "map_dist.png"
@@ -813,12 +828,15 @@ class DataHandler:
             }
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -834,7 +852,7 @@ class DataHandler:
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 1600)
             # plt.xticks(custom_ticks, custom_labels)
@@ -851,12 +869,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -868,7 +889,7 @@ class DataHandler:
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.ylim(0, 800)
             plt.tight_layout()
             filename = "post_squared.png"
@@ -889,12 +910,15 @@ class DataHandler:
             }
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
@@ -910,7 +934,7 @@ class DataHandler:
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 1200)
             # plt.xticks(custom_ticks, custom_labels)
@@ -927,12 +951,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -944,7 +971,7 @@ class DataHandler:
                 r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
                 r'given correspondences) $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
             plt.ylim(0, 800)
             plt.tight_layout()
             filename = "map_squared.png"
@@ -959,12 +986,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -975,7 +1005,7 @@ class DataHandler:
             plt.ylabel(
                 r'Average Hausdorff distances between MAP estimate and true target $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
             plt.ylim(0, 80)
             plt.tight_layout()
             filename = "map_hausdorff.png"
@@ -990,12 +1020,15 @@ class DataHandler:
             })
 
             obs_mapping = {
-                58: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                59: r'$0.7\mathbf{I} + 0.3\mathbf{L}$',
-                60: r'$\mathbf{I}$',
-                61: r'$0.5\mathbf{I} + 0.3\mathbf{L}$',
-                62: r'$(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                63: r'$(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$',
+                28: r'$\mathbf{I} + 200\mathbf{L}$'
             }
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
@@ -1006,7 +1039,7 @@ class DataHandler:
             plt.ylabel(
                 r'Average Hausdorff distances between all samples and their corresponding true target $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-aware model')
+                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
             plt.ylim(0, 80)
             plt.tight_layout()
             filename = "post_hausdorff.png"
@@ -1039,14 +1072,16 @@ class DataHandler:
                             'given correspondences) $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
-                if i == 40:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 4
+                if i == 45:
+                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
+                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
+                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 4
                 else:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 5
+                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
+                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
+                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
@@ -1090,14 +1125,16 @@ class DataHandler:
                             'given correspondences) $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
-                if i == 40:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 4
+                if i == 45:
+                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
+                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
+                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 4
                 else:
-                    x_labels = [r' $\mathbf{I} + 0.8\mathbf{L}$', r' $0.7\mathbf{I} + 0.3\mathbf{L}$', r' $\mathbf{I}$',
-                                r' $0.5\mathbf{I} + 0.3\mathbf{L}$', r' $(0.5\mathbf{I} + 0.3\mathbf{L})^{2}$',
-                                r' $(0.3\mathbf{I} + 0.3\mathbf{L})^{3}$'] * 5
+                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
+                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
+                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
