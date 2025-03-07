@@ -75,6 +75,8 @@ class ProcrustesAnalyser:
                     map(lambda x, y: x.set_points(y, adjust_rotation_centre=True, calc_facet_normals=False), self.meshes,
                         self.points))
 
+        return self.points
+
     def procrustes_alignment(self):
         if self.mode == PCAMode.BATCHED:
             if self.meshes.tensor_points.shape[2] != self.references.tensor_points.shape[2]:

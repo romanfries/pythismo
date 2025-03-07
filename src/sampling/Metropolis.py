@@ -1,14 +1,16 @@
 import copy
 import math
 import warnings
+from operator import attrgetter
 
 import torch
 
+import meshio
 import pytorch3d.ops
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 import point_cloud_utils as pcu
 
-from src.mesh.TMesh import get_transformation_matrix_from_rot_and_trans
+from src.mesh.TMesh import get_transformation_matrix_from_rot_and_trans, TorchMeshGpu, BatchTorchMesh
 from src.model import PointDistributionModel, BatchedPointDistributionModel
 from src.registration import ProcrustesAnalyser, ICPAnalyser
 from src.sampling.proposals import ParameterProposalType
@@ -62,8 +64,10 @@ def unnormalised_log_posterior(distances, inv_cov_operator, parameters, translat
     :rtype: torch.Tensor
     """
     residual = torch.mul(distances, inv_cov_operator @ distances)
+    residual_without = torch.mul(distances, distances)
     # sigma_lm = (torch.linalg.vector_norm(inv_cov_operator @ distances) / torch.linalg.vector_norm(distances)) * sigma_lm
     log_likelihoods = 0.5 * gamma * (torch.mean(-residual, dim=0) / sigma_lm)
+    diff = torch.mean(torch.abs(log_likelihoods - (0.5 * gamma * (torch.mean(-residual_without, dim=0) / sigma_lm))))
     log_prior = 0.5 * torch.sum(-torch.pow(parameters / sigma_mod, 2), dim=0)
     rotation = (rotation + math.pi) % (2.0 * math.pi) - math.pi
     if uniform_pose_prior:
@@ -177,7 +181,7 @@ class PDMMetropolisSampler:
     def __init__(self, pdm, proposal, batch_mesh, target, laplacian_type, alpha=2, beta=0.3, id_fact=0.5, fixed_correspondences=True,
                  triangles=None, barycentric_coords=None, gamma=50.0, var_like=1.0, var_prior_mod=1.0,
                  uniform_pose_prior=True, var_prior_trans=20.0, var_prior_rot=0.005, save_full_mesh_chain=False,
-                 save_residuals=False, variances_on_the_fly=False, default_burn_in=5000):
+                 save_residuals=False, full_target=None, metrics_on_the_fly=False, default_burn_in=5000):
         """
         Main class for Bayesian model fitting using Markov Chain Monte Carlo (MCMC). The Metropolis algorithm
         allows the user to draw samples from any distribution, given that the unnormalized distribution can be evaluated
@@ -289,9 +293,19 @@ class PDMMetropolisSampler:
         self.save_residuals = save_residuals
         self.residuals_c = []
         self.residuals_n = []
-        self.variances_on_the_fly = variances_on_the_fly
-        if self.variances_on_the_fly:
+        self.metrics_on_the_fly = metrics_on_the_fly
+        self.full_target = full_target
+        if self.metrics_on_the_fly:
+            self.mean_dist_c_post = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.mean_dist_n_post = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.mean_dist_c_map = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.mean_dist_n_map = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.squared_c_post = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.squared_n_post = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.squared_c_map = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
+            self.squared_n_map = torch.zeros((self.model.num_points, self.batch_size), device=self.dev)
             self.variances = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
+            self.max_posterior = torch.full((self.batch_size,), float('-inf'), device=self.dev)
             self.old_mean_points = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
             self.mean_points = torch.zeros((self.model.num_points, 3, self.batch_size), device=self.dev)
             self.mean_of_means = torch.zeros((self.model.num_points, 3, 1), device=self.dev)
@@ -302,6 +316,7 @@ class PDMMetropolisSampler:
             self.variances = None
         # Only needs to be used if the variances are to be calculated on the fly.
         self.burn_in = default_burn_in
+        self.residuals_calculated_externally = False
         self.closed = False
 
     def propose(self, parameter_proposal_type: ParameterProposalType):
@@ -439,17 +454,37 @@ class PDMMetropolisSampler:
             residual_c, residual_n = self.get_residual(full_target)
             self.residuals_c.append(residual_c)
             self.residuals_n.append(residual_n)
-        if self.variances_on_the_fly:
+        if self.metrics_on_the_fly:
             self.counter += 1
             if self.counter > self.burn_in:
                 counter_adjusted = self.counter - self.burn_in
                 self.old_mean_points = self.mean_points
                 self.mean_points = self.mean_points + ((self.points - self.mean_points) / counter_adjusted)
 
-                # within
+                # distances
+                # Uncomment this code to enable the on-the-fly calculation of the posterior distance measures
+                # residual_c, residual_n = self.get_residual(self.full_target)
+                # squared_c, squared_n = torch.pow(residual_c, 2), torch.pow(residual_n, 2)
+                # old_mean_dist_c_post, old_mean_dist_n_post = self.mean_dist_c_post, self.mean_dist_n_post
+                # old_squared_c_post, old_squared_n_post = self.squared_c_post, self.squared_n_post
+                # self.mean_dist_c_post = old_mean_dist_c_post + ((residual_c - old_mean_dist_c_post) / counter_adjusted)
+                # self.mean_dist_n_post = old_mean_dist_n_post + ((residual_n - old_mean_dist_n_post) / counter_adjusted)
+                # self.squared_c_post = old_squared_c_post + ((squared_c - old_squared_c_post) / counter_adjusted)
+                # self.squared_n_post = old_squared_n_post + ((squared_n - old_squared_n_post) / counter_adjusted)
+
+                # self.max_posterior = torch.where(self.posterior > self.max_posterior, self.posterior, self.max_posterior)
+                # replace = torch.nonzero(self.posterior > self.max_posterior).squeeze()
+                # self.mean_dist_c_map[:, replace] = residual_c[:, replace]
+                # self.mean_dist_n_map[:, replace] = residual_n[:, replace]
+                # self.squared_c_map[:, replace] = squared_c[:, replace]
+                # self.squared_n_map[:, replace] = squared_n[:, replace]
+                # self.max_posterior = torch.where(self.posterior > self.max_posterior, self.posterior,
+                #                                  self.max_posterior)
+
+                # within-chain variances
                 self.variances = self.variances + (self.points - self.old_mean_points) * (self.points - self.mean_points)
 
-                # between
+                # between-chain variances, bugged
                 delta = self.mean_points - self.mean_of_means
                 self.mean_of_means = self.mean_of_means + torch.cumsum((delta / self.batch_size), dim=2)[:, :, -1:]
                 self.sum_between = self.sum_between + torch.cumsum(delta * (self.mean_points - self.mean_of_means), dim=2)[:, :, -1]
@@ -468,7 +503,7 @@ class PDMMetropolisSampler:
             self.accepted_rot += decider
             self.rejected_rot += ~decider
 
-    def get_residual(self, full_target):
+    def get_residual(self, full_target, reference_points=None):
         """
         Calculates the distance from every point of the complete actual target to the current meshes.
 
@@ -483,12 +518,26 @@ class PDMMetropolisSampler:
         """
         # TODO: To save runtime, do not recalculate the residuals if the sample was rejected, but use the values of the
         #  predecessor.
-        differences = torch.sub(self.points, full_target.tensor_points.unsqueeze(-1))
+        if reference_points is None:
+            differences = torch.sub(self.points, full_target.tensor_points.unsqueeze(-1))
+        else:
+            self.residuals_calculated_externally = True
+            differences = torch.sub(reference_points, full_target.tensor_points.unsqueeze(-1))
         residual_c = torch.linalg.vector_norm(differences, dim=1)
 
-        reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
-        if self.full_target_clouds is None:
+        if reference_points is None:
+            reference_meshes = self.batch_mesh.to_pytorch3d_meshes()
+        else:
+            reference = meshio.Mesh(reference_points[:, :, 0].cpu().numpy(), [meshio.CellBlock('triangle', self.batch_mesh.cells[0].data.cpu().numpy())])
+            torch_mesh = TorchMeshGpu(reference, 'ref', self.dev)
+            batch_mesh = BatchTorchMesh(torch_mesh, 'ref', self.dev, batched_data=True, batched_points=reference_points)
+            reference_meshes = batch_mesh.to_pytorch3d_meshes()
+        if reference_points is not None:
+            self.full_target_clouds = full_target.to_pytorch3d_pointclouds(batch_size=reference_points.size()[2])
+        elif self.full_target_clouds is None or self.residuals_calculated_externally:
             self.full_target_clouds = full_target.to_pytorch3d_pointclouds(batch_size=self.batch_size)
+            self.residuals_calculated_externally = False
+
         # packed representation for faces
         verts_packed = reference_meshes.verts_packed()
         faces_packed = reference_meshes.faces_packed()
@@ -542,6 +591,7 @@ class PDMMetropolisSampler:
         # return ratio_par, None, None, ratio_tot
 
     def change_device(self, dev):
+        # TODO: Needs to be updated, currently not fully functional.
         """
         Change the device on which the tensor operations are or will be allocated.
 
@@ -587,8 +637,9 @@ class PDMMetropolisSampler:
 
     def close(self):
         self.closed = True
-        self.variances = (self.variances / (self.counter - 1)).mean(dim=1)
-        self.between = self.between.mean(dim=1)
+        if self.metrics_on_the_fly:
+            self.variances = (self.variances / (self.counter - 1)).mean(dim=1)
+            self.between = self.between.mean(dim=1)
 
 
 def create_target_aware_model(meshes, dev, target, part_target):
@@ -632,11 +683,11 @@ def create_target_aware_model(meshes, dev, target, part_target):
     # Estimate the correspondences using target sampling
     _, _, fid, bc = estimate_correspondences(part_target, mean_shape, dev)
     model = PointDistributionModel(model_target_aware=True, meshes=meshes)
-    return model, fid, bc
+    return model, fid, bc, torch.stack(list(map(attrgetter('tensor_points'), meshes)))
 
 
 def create_target_unaware_model(meshes, dev, target):
-    ProcrustesAnalyser(meshes).generalised_procrustes_alignment()
+    points = ProcrustesAnalyser(meshes).generalised_procrustes_alignment()
     model = PointDistributionModel(model_target_aware=False, meshes=meshes)
     mean_shape = meshes[0].copy()
     mean_shape.set_points(model.get_mean_points(), adjust_rotation_centre=True)
@@ -646,7 +697,7 @@ def create_target_unaware_model(meshes, dev, target):
     # Estimate the correspondences using target sampling
     _, _, fid, bc = estimate_correspondences(target, mean_shape, dev)
 
-    return model, fid, bc
+    return model, fid, bc, points
 
 
 def estimate_correspondences(x, y, dev):

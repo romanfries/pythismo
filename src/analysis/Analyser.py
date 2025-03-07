@@ -31,8 +31,9 @@ class ChainAnalyser:
         self.sampler = sampler
         self.proposal = proposal
         self.param_chain = proposal.chain  # (num_params, batch_size, chain_length)
-        self.residuals_c = torch.stack(sampler.residuals_c, dim=-1)  # (num_points, batch_size, chain_length)
-        self.residuals_n = torch.stack(sampler.residuals_n, dim=-1)
+        if not self.sampler.metrics_on_the_fly:
+            self.residuals_c = torch.stack(sampler.residuals_c, dim=-1)  # (num_points, batch_size, chain_length)
+            self.residuals_n = torch.stack(sampler.residuals_n, dim=-1)
         self.posterior = proposal.posterior # (batch_size, chain_length)
         self.target = target
         self.model = model
@@ -41,6 +42,7 @@ class ChainAnalyser:
         self.batch_size = self.param_chain.shape[1]
         self.true_batch_size = self.batch_size
         self.chain_length = self.param_chain.shape[2]
+        self.not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.sampler.dev)
         if mesh_chain is not None:
             self.mesh_chain = torch.stack(mesh_chain, dim=-1)  # (num_points, 3, batch_size, chain_length)
             self.num_points = self.mesh_chain.shape[0]
@@ -143,8 +145,11 @@ class ChainAnalyser:
         instances with shape (num_points, batch_size).
         :rtype: tuple
         """
-        residuals_c_squared, residuals_n_squared = torch.pow(self.residuals_c[:, :, self.burn_in:], 2), torch.pow(self.residuals_n[:, :, self.burn_in:], 2)
-        return self.residuals_c[:, :, self.burn_in:].mean(dim=2), self.residuals_n[:, :, self.burn_in:].mean(dim=2), residuals_c_squared.mean(dim=2), residuals_n_squared.mean(dim=2)
+        if self.sampler.metrics_on_the_fly:
+            return self.sampler.mean_dist_c_post[:, ~self.not_converged], self.sampler.mean_dist_n_post[:, ~self.not_converged], self.sampler.squared_c_post[:, ~self.not_converged], self.sampler.squared_n_post[:, ~self.not_converged]
+        else:
+            residuals_c_squared, residuals_n_squared = torch.pow(self.residuals_c[:, :, self.burn_in:], 2), torch.pow(self.residuals_n[:, :, self.burn_in:], 2)
+            return self.residuals_c[:, :, self.burn_in:].mean(dim=2), self.residuals_n[:, :, self.burn_in:].mean(dim=2), residuals_c_squared.mean(dim=2), residuals_n_squared.mean(dim=2)
 
     def mean_dist_to_target_map(self):
         """
@@ -159,7 +164,22 @@ class ChainAnalyser:
         :rtype: tuple
         """
         map_indices = (torch.div(torch.argmax(self.posterior[:, self.burn_in:]), (self.chain_length - self.burn_in), rounding_mode="trunc")).item(), (torch.argmax(self.posterior[:, self.burn_in:]) % (self.chain_length - self.burn_in)).item()
-        return self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], torch.pow(self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2), torch.pow(self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2)
+        if self.sampler.metrics_on_the_fly:
+            # Recalculate the mesh represented by the MAP model parameters
+            # TODO: Create method that implements this task. This is a fundamental functionality.
+            self.rotation_centre = self.sampler.batch_mesh.rotation_centre[:, 0]
+            map_points = self.model.get_points_from_parameters(self.param_chain[:-6, map_indices[0], self.burn_in + map_indices[1]])
+            translation = self.param_chain[-6:-3, map_indices[0], self.burn_in + map_indices[1]]
+            rotation = self.param_chain[-3:, map_indices[0], self.burn_in + map_indices[1]]
+            rotation_matrix = get_transformation_matrix_from_euler_angles(rotation)
+            map_points -= self.rotation_centre
+            additional_col = torch.ones((map_points.size()[0], 1), device=map_points.device)
+            extended_points = torch.cat((map_points, additional_col), dim=1)
+            map_points = (extended_points @ rotation_matrix.T)[:, :3] + self.rotation_centre + translation
+            mean_dist_c_map, mean_dist_n_map = self.sampler.get_residual(self.target, map_points.unsqueeze(-1))
+            return mean_dist_c_map.squeeze(), mean_dist_n_map.squeeze(), torch.pow(mean_dist_c_map, 2).squeeze(), torch.pow(mean_dist_n_map, 2).squeeze()
+        else:
+            return self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], torch.pow(self.residuals_c[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2), torch.pow(self.residuals_n[:, :, self.burn_in:][:, map_indices[0], map_indices[1]], 2)
 
     def hausdorff_distances(self):
         # Mesh Chain must be available to calculate the Hausdorff distances.
@@ -182,9 +202,9 @@ class ChainAnalyser:
         # TODO: Missing error handling. If variances are not calculated on the fly, the mesh chain has to be available.
         # TODO: Bugged: The calculation in retrospect does not match the on the fly calculation for the between-chain
         #  variance.
-        if self.sampler.variances_on_the_fly:
+        if self.sampler.metrics_on_the_fly:
             # Where does the factor of 2 come from?
-            return 2 * self.sampler.variances, self.sampler.between
+            return 2 * self.sampler.variances[:, ~self.not_converged], self.sampler.between
         else:
             within = self.mesh_chain[:, :, :, self.burn_in:].var(dim=3).mean(dim=1)
             between = (self.chain_length - self.burn_in) * self.mesh_chain[:, :, :, self.burn_in:].mean(dim=3).var(dim=2).mean(dim=1)
@@ -231,9 +251,10 @@ class ChainAnalyser:
             self.mesh_chain = self.mesh_chain[:, :, ~not_converged, :]
         self.param_chain = self.param_chain[:, ~not_converged, :]
         self.posterior = self.posterior[~not_converged, :]
-        self.residuals_c = self.residuals_c[:, ~not_converged, :]
-        self.residuals_n = self.residuals_n[:, ~not_converged, :]
-        return not_converged
+        if not self.sampler.metrics_on_the_fly:
+            self.residuals_c = self.residuals_c[:, ~not_converged, :]
+            self.residuals_n = self.residuals_n[:, ~not_converged, :]
+        self.not_converged = not_converged
 
     def error_analysis(self):
         batched_target = BatchTorchMesh(self.target, 'target', self.proposal.dev, batch_size=1)
@@ -268,7 +289,7 @@ class ChainAnalyser:
         best_params = get_parameters((batched_target.tensor_points - batched_mean.tensor_points).reshape((-1, 1)),
                                      self.model.components)
         best_reconstruction = (batched_mean.tensor_points.squeeze().reshape((-1, 1)) + self.model.components @ best_params).reshape((-1, 3))
-        orthogonal_error = torch.norm(best_reconstruction - batched_target.tensor_points.squeeze(), dim=1)
+        # orthogonal_error = torch.norm(best_reconstruction - batched_target.tensor_points.squeeze(), dim=1)
 
         if not self.model.model_target_aware:
             proc_mean = ProcrustesAnalyser(batched_mean, batched_target, mode=PCAMode.BATCHED)
@@ -280,6 +301,7 @@ class ChainAnalyser:
             best_params = get_parameters((batched_target.tensor_points - batched_mean.tensor_points).reshape((-1, 1)), self.model.components)
             best_reconstruction = (batched_mean.tensor_points.squeeze().reshape((-1, 1)) + self.model.components @ best_params).reshape((-1, 3))
 
+        orthogonal_error = torch.mean(torch.norm(best_reconstruction - batched_target.tensor_points.squeeze(), dim=1))
         model_error = torch.norm(best_reconstruction - map_pose_free.squeeze(), dim=1)
         return full_error, model_error, pose_error, pose_error_2, orthogonal_error
 
@@ -303,8 +325,7 @@ class ChainAnalyser:
         # self.error_analysis()
         # TODO: If the variances are calculated on the fly, it is not possible to eliminate the influence of the faulty
         #  chains from this calculation.
-        # not_converged = self.simple_convergence_check()
-        not_converged = torch.zeros((self.batch_size,), dtype=torch.bool, device=self.param_chain.device)
+        self.simple_convergence_check()
         means, mins, maxs, vars = self.posterior_analytics()
         rhat = self.rhat(ix=ix)
         ess = self.ess(ix=ix)
@@ -315,14 +336,14 @@ class ChainAnalyser:
         else:
             hausdorff_avg, hausdorff_map = torch.zeros((self.batch_size,)), 0.0
         avg_var_within, avg_var_between = self.avg_variance_per_point()
-        acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio(~not_converged)
+        acc_par, acc_rnd, acc_trans, acc_rot, acc_tot = self.sampler.acceptance_ratio(~self.not_converged)
         data = {
             'description': 'MCMC statistics',
             'identifiers': {
                 'reconstructed_shape': loo,
                 'percentage_observed': obs,
                 'additional_param': additional_param,
-                'chains_considered': torch.sum(~not_converged).item()
+                'chains_considered': torch.sum(~self.not_converged).item()
             },
             'effective_sample_sizes': {
                 'ess_per_param': ess.tolist(),
@@ -396,6 +417,7 @@ class ChainAnalyser:
                 )
             }
             figures.append(figure)
+        del posterior_cpu
         return figures
 
 

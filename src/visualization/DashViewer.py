@@ -10,10 +10,11 @@ from src.mesh import TorchMeshGpu
 
 
 class BatchMeshVisualizer:
-    def __init__(self, app, mesh):
+    def __init__(self, app, mesh, observed):
         self.app = app
         self.mesh = mesh
         self.length = mesh.batch_size
+        self.observed = observed
         self.layout = self.setup_layout_and_callbacks()
 
     def setup_layout_and_callbacks(self):
@@ -46,31 +47,341 @@ class BatchMeshVisualizer:
             Output('3d-mesh', 'figure'),
             Input('custom-slider', 'value'))
         def update_figure(mesh_to_show):
+            observed_com = torch.sum(self.mesh.tensor_points[self.observed], dim=0) / torch.sum(self.observed).item()
             x, y, z = self.mesh.tensor_points[:, :, mesh_to_show].T
             i, j, k = self.mesh.cells[0].data.T
+            intensity = z
+            # if mesh_to_show == 0:
+            #     x_1, y_1, z_1 = self.mesh.tensor_points[:, :, 0].T
+            #     x_2, y_2, z_2 = self.mesh.tensor_points[:, :, 1].T
+            #     x_3, y_3, z_3 = self.mesh.tensor_points[:, :, 2].T
+            #    i, j, k = self.mesh.cells[0].data.T
+                # intensity = z
+                # intensity_1 = z_1
+                # intensity_2 = z_2
+                # intensity_3 = z_3
+
+            bone = [
+                [0, 'rgb(240, 240, 240)'],  # Light grey
+                [0.5, 'rgb(200, 200, 200)'],  # Medium grey
+                [1, 'rgb(160, 160, 160)']  # Dark grey
+            ]
+
+                # observed_tris = self.observed[i] & self.observed[j] & self.observed[k]
+                # other_tris = ~observed_tris
             mesh_figure = go.Figure(data=[
                 go.Mesh3d(
-                    x=x,
-                    y=y,
-                    z=z,
-                    i=i,
-                    j=j,
-                    k=k,
-                    color='lightpink',
-                    opacity=0.50
+                x=x,
+                y=y,
+                z=z,
+                i=i,
+                j=j,
+                k=k,
+                intensity=intensity,
+                colorscale=bone,
+                opacity=1.0,
                 )
             ])
 
+            # mesh_figure = go.Figure()
+
+                # mesh_figure.update_layout(
+                #     scene=dict(
+                #         aspectmode='cube',
+                #         xaxis=dict(nticks=10, range=display_range),
+                #         yaxis=dict(nticks=10, range=display_range),
+                #         zaxis=dict(nticks=10, range=display_range),
+                #     )
+                # )
+
+                # mesh_figure.add_trace(
+                #     go.Mesh3d(
+                #         x=x_1, y=y_1, z=z_1,
+                #         i=i, j=j, k=k,
+                #         intensity=intensity_1,
+                #         colorscale=bone,
+                #         opacity=0.5,
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Mesh3d(
+                #         x=x_2, y=y_2, z=z_2,
+                #         i=i, j=j, k=k,
+                #         intensity=intensity_2,
+                #         colorscale=bone,
+                #         opacity=0.5,
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Mesh3d(
+                #         x=x_3, y=y_3, z=z_3,
+                #         i=i, j=j, k=k,
+                #         intensity=intensity_3,
+                #         colorscale=bone,
+                #         opacity=0.5,
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[self.mesh.initial_com[:, 0][0].item()],
+                #         y=[self.mesh.initial_com[:, 0][1].item()],
+                #         z=[self.mesh.initial_com[:, 0][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='red', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[self.mesh.initial_com[:, 1][0].item()],
+                #         y=[self.mesh.initial_com[:, 1][1].item()],
+                #         z=[self.mesh.initial_com[:, 1][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='red', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[self.mesh.initial_com[:, 2][0].item()],
+                #         y=[self.mesh.initial_com[:, 2][1].item()],
+                #         z=[self.mesh.initial_com[:, 2][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='red', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[observed_com[:, 0][0].item()],
+                #         y=[observed_com[:, 0][1].item()],
+                #         z=[observed_com[:, 0][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='black', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[observed_com[:, 1][0].item()],
+                #         y=[observed_com[:, 1][1].item()],
+                #         z=[observed_com[:, 1][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='black', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+                #
+                # mesh_figure.add_trace(
+                #     go.Scatter3d(
+                #         x=[observed_com[:, 2][0].item()],
+                #         y=[observed_com[:, 2][1].item()],
+                #         z=[observed_com[:, 2][2].item()],
+                #         mode='markers',
+                #         marker=dict(size=12, color='black', symbol='cross'),
+                #         name="Center of Mass"
+                #     )
+                # )
+
+                #
+                # mesh_figure.add_trace(
+                #    go.Mesh3d(
+                #         x=x, y=y, z=z,
+                #         i=i[~observed_tris], j=j[~observed_tris], k=k[~observed_tris],
+                #         intensity=intensity,
+                #         colorscale=bone,
+                #         opacity=0.3,
+                #     )
+                # )
+
             mesh_figure.update_layout(
                 scene=dict(
-                    aspectmode='cube',
-                    xaxis=dict(nticks=10, range=display_range),
-                    yaxis=dict(nticks=10, range=display_range),
-                    zaxis=dict(nticks=10, range=display_range),
-                )
+                aspectmode='data',  # Adjust aspect ratio to the data
+                xaxis=dict(visible=False),  # Hide x-axis
+                    yaxis=dict(visible=False),  # Hide y-axis
+                    zaxis=dict(visible=False),  # Hide z-axis
+                    xaxis_showgrid=False,  # Disable x-axis grid
+                    yaxis_showgrid=False,  # Disable y-axis grid
+                    zaxis_showgrid=False,  # Disable z-axis grid
+                    bgcolor='rgba(0,0,0,0)'  # Transparent background
+                ),
+                showlegend=False  # Hide legend
             )
 
             return mesh_figure
+
+            # else:
+            #     # x, y, z = self.mesh.tensor_points[:, :, mesh_to_show].T
+            #     x_1, y_1, z_1 = self.mesh.tensor_points[:, :, 3].T
+            #     x_2, y_2, z_2 = self.mesh.tensor_points[:, :, 4].T
+            #     x_3, y_3, z_3 = self.mesh.tensor_points[:, :, 5].T
+            #     i, j, k = self.mesh.cells[0].data.T
+            #     # intensity = z
+            #     intensity_1 = z_1
+            #     intensity_2 = z_2
+            #     intensity_3 = z_3
+            #     bone = [
+            #         [0, 'rgb(240, 240, 240)'],  # Light grey
+            #         [0.5, 'rgb(200, 200, 200)'],  # Medium grey
+            #         [1, 'rgb(160, 160, 160)']  # Dark grey
+            #     ]
+            #
+            #     observed_tris = self.observed[i] & self.observed[j] & self.observed[k]
+            #     other_tris = ~observed_tris
+            #     # mesh_figure = go.Figure(data=[
+            #     #     go.Mesh3d(
+            #     #         x=x,
+            #     #         y=y,
+            #     #         z=z,
+            #     #         i=i,
+            #     #         j=j,
+            #     #         k=k,
+            #     #         intensity=intensity,
+            #     #         colorscale=bone,
+            #     #         opacity=1.0,
+            #     #     )
+            #     # ])
+            #
+            #     mesh_figure = go.Figure()
+            #
+            #     # mesh_figure.update_layout(
+            #     #     scene=dict(
+            #     #         aspectmode='cube',
+            #     #         xaxis=dict(nticks=10, range=display_range),
+            #     #         yaxis=dict(nticks=10, range=display_range),
+            #     #         zaxis=dict(nticks=10, range=display_range),
+            #     #     )
+            #     # )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Mesh3d(
+            #             x=x_1, y=y_1, z=z_1,
+            #             i=i, j=j, k=k,
+            #             intensity=intensity_1,
+            #             colorscale=bone,
+            #             opacity=0.5,
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Mesh3d(
+            #             x=x_2, y=y_2, z=z_2,
+            #             i=i, j=j, k=k,
+            #             intensity=intensity_2,
+            #             colorscale=bone,
+            #             opacity=0.5,
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Mesh3d(
+            #             x=x_3, y=y_3, z=z_3,
+            #             i=i, j=j, k=k,
+            #             intensity=intensity_3,
+            #             colorscale=bone,
+            #             opacity=0.5,
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[self.mesh.initial_com[:, 3][0].item()],
+            #             y=[self.mesh.initial_com[:, 3][1].item()],
+            #             z=[self.mesh.initial_com[:, 3][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='red', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[self.mesh.initial_com[:, 4][0].item()],
+            #             y=[self.mesh.initial_com[:, 4][1].item()],
+            #             z=[self.mesh.initial_com[:, 4][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='red', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[self.mesh.initial_com[:, 5][0].item()],
+            #             y=[self.mesh.initial_com[:, 5][1].item()],
+            #             z=[self.mesh.initial_com[:, 5][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='red', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[observed_com[:, 3][0].item()],
+            #             y=[observed_com[:, 3][1].item()],
+            #             z=[observed_com[:, 3][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='black', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[observed_com[:, 4][0].item()],
+            #             y=[observed_com[:, 4][1].item()],
+            #             z=[observed_com[:, 4][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='black', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     mesh_figure.add_trace(
+            #         go.Scatter3d(
+            #             x=[observed_com[:, 5][0].item()],
+            #             y=[observed_com[:, 5][1].item()],
+            #             z=[observed_com[:, 5][2].item()],
+            #             mode='markers',
+            #             marker=dict(size=12, color='black', symbol='cross'),
+            #             name="Center of Mass"
+            #         )
+            #     )
+            #
+            #     #
+            #     # mesh_figure.add_trace(
+            #     #    go.Mesh3d(
+            #     #         x=x, y=y, z=z,
+            #     #         i=i[~observed_tris], j=j[~observed_tris], k=k[~observed_tris],
+            #     #         intensity=intensity,
+            #     #         colorscale=bone,
+            #     #         opacity=0.3,
+            #     #     )
+            #     # )
+            #
+            #     mesh_figure.update_layout(
+            #         scene=dict(
+            #             aspectmode='data',  # Adjust aspect ratio to the data
+            #             xaxis=dict(visible=False),  # Hide x-axis
+            #             yaxis=dict(visible=False),  # Hide y-axis
+            #             zaxis=dict(visible=False),  # Hide z-axis
+            #             xaxis_showgrid=False,  # Disable x-axis grid
+            #             yaxis_showgrid=False,  # Disable y-axis grid
+            #             zaxis_showgrid=False,  # Disable z-axis grid
+            #             bgcolor='rgba(0,0,0,0)'  # Transparent background
+            #         ),
+            #         showlegend=False  # Hide legend
+            #     )
+            #
+            #     return mesh_figure
 
         return layout
 
@@ -153,6 +464,13 @@ class ModelVisualizer:
         inputs.extend(translation_inputs)
         inputs.extend(rotation_inputs)
 
+        mean_points = self.model.get_points_from_parameters(torch.zeros((self.num_parameters - 6), device=self.model.dev))
+        mean_mesh = meshio.Mesh(mean_points.cpu().numpy(), [meshio.CellBlock('triangle',
+                                                                           self.batched_ref.cells[
+                                                                               0].data.cpu().numpy())])
+        mean_torch_mesh = TorchMeshGpu(mean_mesh, 'display', torch.device("cpu"))
+        x_mean, y_mean, z_mean = mean_torch_mesh.tensor_points.T
+
         @callback(
             Output('mesh-plot', 'figure'),
             inputs
@@ -170,18 +488,48 @@ class ModelVisualizer:
             new_torch_mesh.apply_rotation(rotation)
             x, y, z = new_torch_mesh.tensor_points.T
             i_, j, k = new_torch_mesh.cells[0].data.T
-            mesh_figure = go.Figure(data=[
+            intensity = z
+            # mesh_figure = go.Figure(data=[
+            #     go.Mesh3d(
+            #         x=x,
+            #         y=y,
+            #         z=z,
+            #         i=i_,
+            #         j=j,
+            #         k=k,
+            #         color='lightpink',
+            #         opacity=0.50
+            #     )
+            # ])
+
+            bone = [
+                [0, 'rgb(240, 240, 240)'],  # Light grey
+                [0.5, 'rgb(200, 200, 200)'],  # Medium grey
+                [1, 'rgb(160, 160, 160)']  # Dark grey
+            ]
+
+            mesh_figure = go.Figure()
+            mesh_figure.add_trace(
                 go.Mesh3d(
-                    x=x,
-                    y=y,
-                    z=z,
-                    i=i_,
-                    j=j,
-                    k=k,
+                    x=x, y=y, z=z,
+                    i=i_, j=j, k=k,
+                    # intensity=intensity,
                     color='lightpink',
-                    opacity=0.50
+                    opacity=0.8,
                 )
-            ])
+            )
+
+            mesh_figure.add_trace(
+                go.Mesh3d(
+                    x=x_mean, y=y_mean, z=z_mean,
+                    i=i_, j=j, k=k,
+                    intensity=intensity,
+                    colorscale=bone,
+                    opacity=0.3,
+                )
+            )
+
+
 
             mesh_figure.update_layout(
                 scene=dict(
@@ -189,8 +537,29 @@ class ModelVisualizer:
                     xaxis=dict(nticks=10, range=display_range),
                     yaxis=dict(nticks=10, range=display_range),
                     zaxis=dict(nticks=10, range=display_range),
+                    xaxis_showgrid=False,
+                    yaxis_showgrid=False,
+                    zaxis_showgrid=False,
+                    xaxis_showbackground=False,
+                    yaxis_showbackground=False,
+                    zaxis_showbackground=False,
+                    bgcolor='rgba(0,0,0,0)'
                 )
             )
+
+            # mesh_figure.update_layout(
+            #     scene=dict(
+            #         aspectmode='data',  # Adjust aspect ratio to the data
+            #         xaxis=dict(nticks=10, range=display_range),  # Hide x-axis
+            #         yaxis=dict(nticks=10, range=display_range),  # Hide y-axis
+            #         zaxis=dict(nticks=10, range=display_range),  # Hide z-axis
+            #         xaxis_showgrid=False,  # Disable x-axis grid
+            #         yaxis_showgrid=False,  # Disable y-axis grid
+            #         zaxis_showgrid=False,  # Disable z-axis grid
+            #         bgcolor='rgba(0,0,0,0)'  # Transparent background
+            #     ),
+            #     showlegend=False  # Hide legend
+            # )
 
             return mesh_figure
 
@@ -263,7 +632,7 @@ class ChainVisualizer:
                 rotation = params[-3:]
                 points = self.sampler.model.get_points_from_parameters(params[:-6])
                 new_mesh = meshio.Mesh(points.numpy(), [meshio.CellBlock('triangle', self.sampler.batch_mesh.cells[
-                                                                         0].data.numpy())])
+                    0].data.numpy())])
                 new_torch_mesh = TorchMeshGpu(new_mesh, 'display', torch.device("cpu"))
                 new_torch_mesh.apply_rotation(rotation)
                 new_torch_mesh.apply_translation(translation)
@@ -374,9 +743,9 @@ class PosteriorVisualizer:
 
 
 class MainVisualizer:
-    def __init__(self, mesh, model, sampler):
+    def __init__(self, mesh, model, sampler, observed):
         self.app = dash.Dash(__name__, suppress_callback_exceptions=False)
-        self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh)
+        self.batch_mesh_visualizer = BatchMeshVisualizer(self.app, mesh, observed)
         self.model_visualizer = ModelVisualizer(self.app, model, mesh)
         self.chain_visualizer = ChainVisualizer(self.app, sampler)
         self.posterior_visualizer = PosteriorVisualizer(self.app, sampler.proposal)
@@ -429,5 +798,3 @@ class VisualizerLight:
 
     def run(self):
         self.app.run_server(debug=False)
-
-

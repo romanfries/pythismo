@@ -64,7 +64,7 @@ class DataHandler:
 
     def rename_files(self, case=1):
         # TODO: Write the method properly by defining the new name(s) as an input parameter
-        for file_path in self.statistics_dir.glob('mcmc_*_26_100.json'):
+        for file_path in self.statistics_dir.glob('mcmc_*_27_100.json'):
             parts = file_path.stem.split('_')
             xx = parts[1]
             yy = parts[2]
@@ -72,7 +72,7 @@ class DataHandler:
             if len(xx) == 1:
                 xx = '0' + xx
 
-            new_filename = f'mcmc_{xx}_26_100.json'
+            new_filename = f'mcmc_{xx}_27_100.json'
             new_file_path = file_path.with_name(new_filename)
             file_path.rename(new_file_path)
 
@@ -166,7 +166,10 @@ class DataHandler:
                 additional_param_list.append(additional_param)
 
         stacked_data = {
-            'effective_sample_sizes': torch.stack(ess_list),
+            'convergence': {
+                'effective_sample_sizes': torch.stack(ess_list),
+                'rhat_values': torch.stack(rhat_list)
+            },
             'accuracy': {
                 'mean_dist_corr_post': pad_sequence([elem.T for elem in mean_dist_c_post_list],
                                                     batch_first=True, padding_value=float('nan')).permute(0, 2, 1),
@@ -250,7 +253,10 @@ class DataHandler:
             additional_param = loaded_data['identifiers']['additional_param']
 
         data = {
-            'effective_sample_sizes': ess,
+            'convergence': {
+                'effective_sample_sizes': ess,
+                'rhat_values': rhat
+            },
             'accuracy': {
                 'mean_dist_corr_post': mean_dist_c_post,
                 'mean_dist_clp_post': mean_dist_n_post,
@@ -442,7 +448,7 @@ class DataHandler:
             output_file = dir / output_filename
             pio.write_image(traceplot, output_file)
 
-    def generate_plots(self, num_chains_select, data_dict=None, chains_to_remove=None, num_categories=9, add_param_available=False):
+    def generate_plots(self, num_chains_select, data_dict=None, chains_to_remove=None, num_categories=6, add_param_available=False):
         # Needs to be adjusted depending on the experiments performed
         if data_dict is None:
             data_dict = self.read_all_statistics()
@@ -470,6 +476,9 @@ class DataHandler:
         additional_param = data_dict['identifiers']['additional_param']
         observed = data_dict['observed']
 
+        ess = data_dict['convergence']['effective_sample_sizes']
+        rhat = data_dict['convergence']['rhat_values']
+
         # For every femur shape, keep only 'num_chains' randomly selected chains
         num_shapes, num_points, max_chains = mean_dist_c_post.size()
         nan_mask = torch.isnan(mean_dist_c_post).any(dim=1)
@@ -483,12 +492,12 @@ class DataHandler:
                                          torch.argsort(new_mask, dim=1, descending=True)[:, :num_chains_select]).long()
 
         # avg_var_all = avg_var.mean(dim=1).numpy()
-        mean_dist_c_post = torch.gather(mean_dist_c_post, dim=2, index=permutation.unsqueeze(1).expand(-1, 200, -1))
-        mean_dist_n_post = torch.gather(mean_dist_n_post, dim=2, index=permutation.unsqueeze(1).expand(-1, 200, -1))
-        squared_c_post = torch.gather(squared_c_post, dim=2, index=permutation.unsqueeze(1).expand(-1, 200, -1))
-        squared_n_post = torch.gather(squared_n_post, dim=2, index=permutation.unsqueeze(1).expand(-1, 200, -1))
+        mean_dist_c_post = torch.gather(mean_dist_c_post, dim=2, index=permutation.unsqueeze(1).expand(-1, num_points, -1))
+        mean_dist_n_post = torch.gather(mean_dist_n_post, dim=2, index=permutation.unsqueeze(1).expand(-1, num_points, -1))
+        squared_c_post = torch.gather(squared_c_post, dim=2, index=permutation.unsqueeze(1).expand(-1, num_points, -1))
+        squared_n_post = torch.gather(squared_n_post, dim=2, index=permutation.unsqueeze(1).expand(-1, num_points, -1))
         hausdorff_avg = torch.gather(hausdorff_avg, dim=1, index=permutation)
-        avg_var = torch.gather(avg_var, dim=2, index=permutation.unsqueeze(1).expand(-1, 200, -1))
+        avg_var = torch.gather(avg_var, dim=2, index=permutation.unsqueeze(1).expand(-1, num_points, -1))
 
         # Average out all the points and chains
         mean_dist_c_post_all = mean_dist_c_post.nanmean(dim=2).nanmean(dim=1).numpy()
@@ -602,11 +611,121 @@ class DataHandler:
             # 'avg_var_between_mean_f': avg_var_between_mean_f,
             'shape': shape.numpy(),
             'obs': obs.numpy(),
-            'additional_param': additional_param.numpy() / 100
+            'additional_param': additional_param.numpy() / 100,
+            'ess': ess[:, 0].numpy(),
+            'rhat': rhat[:, 0].numpy()
         })
 
         if not add_param_available:
             # Plots that do not sort the data according to the additional parameter and ignore it.
+            # Squared distances to corresponding points / variances across the MAP estimates of all MCMC chains combined
+            df_small = pd.DataFrame({
+                'obs': obs.numpy(),
+                'squared_c_map_all': squared_c_map_all,
+                'squared_c_map_mean_t': squared_c_map_mean_t,
+                'squared_c_map_mean_f': squared_c_map_mean_f,
+                'avg_var_all': avg_var_all
+            })
+            obs_mapping = {
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
+            }
+
+            # obs_mapping = {
+            #     20: r'Target-Aware',
+            #     21: r'Target-Unaware',
+            #     22: r'Target-Unaware (long)'
+            # }
+
+            df_mean = df_small.groupby('obs', as_index=False).mean()
+            df_mean['obs'] = df_mean['obs'].map(obs_mapping)
+            fig, ax1 = plt.subplots(figsize=(8, 4.8), dpi=300)
+            ax1.scatter(df_mean['obs'], df_mean['squared_c_map_all'], color='red', label='Distances (all)', s=100)
+            ax1.scatter(df_mean['obs'], df_mean['squared_c_map_mean_t'], color='darkred', label='Distances (observed)',
+                        s=100)
+            ax1.scatter(df_mean['obs'], df_mean['squared_c_map_mean_f'], color='lightcoral',
+                        label='Distances (not observed)', s=100)
+            plt.plot(df_mean['obs'], df_mean['squared_c_map_all'], color='red')
+            plt.plot(df_mean['obs'], df_mean['squared_c_map_mean_t'], color='darkred')
+            plt.plot(df_mean['obs'], df_mean['squared_c_map_mean_f'], color='lightcoral')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
+            ax1.set_ylabel(r'Squared Euclidean distance $[\mathrm{mm}^{2}]$', color='red')
+            ax1.set_ylim(0, 500)
+            ax1.legend(loc='upper left')
+            ax1.set_xticks([])
+
+            ax2 = ax1.twinx()
+            ax2.scatter(df_mean['obs'], df_mean['avg_var_all'], color='blue',
+                        label='Variances (right)', s=100)
+            plt.plot(df_mean['obs'], df_mean['avg_var_all'], color='blue')
+            ax2.set_ylabel(r'Average variance of the points $[\mathrm{mm}^{2}]$', color='blue')
+            ax2.set_ylim(0, 150)
+            plt.title('Femur reconstruction with target-unaware model')
+            fig.tight_layout()
+            filename = f'combined_map_dist_var.png'
+            png_plot_file = self.plot_dir / filename
+            plt.savefig(png_plot_file)
+            plt.close()
+
+            # MCMC statistics \hat{R} and ESS
+            df_small = pd.DataFrame({
+                'obs': obs.numpy(),
+                'rhat_1': rhat[:, 0].numpy(),
+                'rhat_2': rhat[:, 1].numpy(),
+                'rhat_3': rhat[:, 2].numpy(),
+                'rhat_4': rhat[:, 3].numpy(),
+                'rhat_5': rhat[:, 4].numpy(),
+                'rhat_6': rhat[:, 5].numpy(),
+                'rhat_7': rhat[:, 6].numpy(),
+                'rhat_8': rhat[:, 7].numpy(),
+                'rhat_9': rhat[:, 8].numpy(),
+                'rhat_10': rhat[:, 9].numpy()
+            })
+
+            obs_mapping = {
+                20: r'$\mathbf{I}$',
+                21: r'$\mathbf{I} + 0.2\mathbf{L}$',
+                23: r'$\mathbf{I} + 0.8\mathbf{L}$',
+                25: r'$\mathbf{I} + 3.2\mathbf{L}$',
+                26: r'$\mathbf{I} + 50\mathbf{L}$',
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
+            }
+
+            df_mean = df_small.groupby('obs', as_index=False).mean()
+            df_mean['obs'] = df_mean['obs'].map(obs_mapping)
+
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            map = {
+                'rhat_1': 1,
+                'rhat_2': 2,
+                'rhat_3': 3,
+                'rhat_4': 4,
+                'rhat_5': 5,
+                'rhat_6': 6,
+                'rhat_7': 7,
+                'rhat_8': 8,
+                'rhat_9': 9,
+                'rhat_10': 10,
+
+            }
+            for column in [col for col in df_mean.columns if col.startswith('rhat')]:
+                plt.plot(df_mean['obs'], df_mean[column], marker='o', linestyle='-', label=map[column])
+
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
+            plt.ylabel(r'Average $\hat{R}$ of the first 10 model parameters with largest eigenvalues')
+            plt.title('Femur reconstruction with target-unaware model')
+            plt.legend(title="Model Parameter", loc='upper right')
+            plt.tight_layout()
+
+            filename = "mcmc_statistics.png"
+            png_plot_file = self.plot_dir / filename
+            plt.savefig(png_plot_file)
+            plt.close()
+
             # Average distance to corresponding point across all samples
             df_melted = df.melt(id_vars=['obs'],
                                 value_vars=['mean_dist_c_post_all', 'mean_dist_c_post_mean_t',
@@ -622,29 +741,26 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
             df_melted['obs'] = df_melted['obs'].map(obs_mapping)
             df_melted = df_melted.dropna(subset=['mean'])
 
-            plt.figure(figsize=(20, 10), dpi=300)
+            plt.figure(figsize=(8, 4.8), dpi=300)
 
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax = sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}]$')
+                r'Euclidean distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             # plt.xticks(custom_ticks, custom_labels)
@@ -653,6 +769,7 @@ class DataHandler:
             png_plot_file = self.plot_dir / filename
             plt.savefig(png_plot_file)
             plt.close()
+
 
             # Average distance to corresponding point across all samples
             df_small = pd.DataFrame({
@@ -663,25 +780,23 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='mean_dist_c_post_all', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='mean_dist_c_post_all', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}]$')
+                r'Euclidean distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "post_dist.png"
@@ -703,30 +818,28 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
             df_melted['obs'] = df_melted['obs'].map(obs_mapping)
             df_melted = df_melted.dropna(subset=['mean'])
 
-            plt.figure(figsize=(20, 10), dpi=300)
+            plt.figure(figsize=(8, 4.8), dpi=300)
 
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax = sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
                 r'Average variance of the points $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
-            plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
-            plt.ylim(0, 20)
+                'Femur reconstruction with target-unaware model')
+            plt.legend(title='Type of points analysed', bbox_to_anchor=(0.05, 1), loc='upper left')
+            plt.ylim(0, 160)
             plt.tight_layout()
             filename = "var_split.png"
             png_plot_file = self.plot_dir / filename
@@ -748,29 +861,26 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
             df_melted['obs'] = df_melted['obs'].map(obs_mapping)
             df_melted = df_melted.dropna(subset=['mean'])
 
-            plt.figure(figsize=(20, 10), dpi=300)
+            plt.figure(figsize=(8, 4.8), dpi=300)
 
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax = sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}]$')
+                r'Euclidean distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 40)
             # plt.xticks(custom_ticks, custom_labels)
@@ -789,25 +899,23 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='mean_dist_c_map_all', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='mean_dist_c_map_all', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}]$')
+                r'Euclidean distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 25)
             plt.tight_layout()
             filename = "map_dist.png"
@@ -830,31 +938,27 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
             df_melted['obs'] = df_melted['obs'].map(obs_mapping)
             df_melted = df_melted.dropna(subset=['mean'])
 
-            plt.figure(figsize=(20, 10), dpi=300)
+            plt.figure(figsize=(8, 4.8), dpi=300)
 
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax = sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
-            plt.ylabel(
-                r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}^{2}]$')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
+            plt.ylabel(r'Squared Euclidean distance $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
-            plt.ylim(0, 1600)
+            plt.ylim(0, 1200)
             # plt.xticks(custom_ticks, custom_labels)
             plt.tight_layout()
             filename = "post_squared_split.png"
@@ -871,25 +975,22 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='squared_c_post_all', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='squared_c_post_all', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
-            plt.ylabel(
-                r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}^{2}]$')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
+            plt.ylabel(r'Squared Euclidean distance $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 800)
             plt.tight_layout()
             filename = "post_squared.png"
@@ -912,29 +1013,26 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
 
             df_melted['category'] = df_melted['category'].map(category_mapping)
             df_melted['obs'] = df_melted['obs'].map(obs_mapping)
             df_melted = df_melted.dropna(subset=['mean'])
 
-            plt.figure(figsize=(20, 10), dpi=300)
+            plt.figure(figsize=(8, 4.8), dpi=300)
 
-            sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax = sns.boxplot(x='obs', y='mean', hue='category', data=df_melted)
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}^{2}]$')
+                r'Squared Euclidean distance $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.legend(title='Type of points analysed', bbox_to_anchor=(1.05, 1), loc='upper right')
             plt.ylim(0, 1200)
             # plt.xticks(custom_ticks, custom_labels)
@@ -953,25 +1051,23 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='squared_c_map_all', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='squared_c_map_all', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average squared distance to the corresponding point on the reconstruction surface (utilising '
-                r'given correspondences) $[\mathrm{mm}^{2}]$')
+                r'Squared Euclidean distance $[\mathrm{mm}^{2}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 800)
             plt.tight_layout()
             filename = "map_squared.png"
@@ -988,24 +1084,23 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='hausdorff_map', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='hausdorff_map', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average Hausdorff distances between MAP estimate and true target $[\mathrm{mm}]$')
+                r'Hausdorff distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains, MAP sample selected) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 80)
             plt.tight_layout()
             filename = "map_hausdorff.png"
@@ -1022,24 +1117,23 @@ class DataHandler:
             obs_mapping = {
                 20: r'$\mathbf{I}$',
                 21: r'$\mathbf{I} + 0.2\mathbf{L}$',
-                22: r'$\mathbf{I} + 0.4\mathbf{L}$',
                 23: r'$\mathbf{I} + 0.8\mathbf{L}$',
-                24: r'$\mathbf{I} + 1.6\mathbf{L}$',
                 25: r'$\mathbf{I} + 3.2\mathbf{L}$',
                 26: r'$\mathbf{I} + 50\mathbf{L}$',
-                27: r'$\mathbf{I} + 100\mathbf{L}$',
-                28: r'$\mathbf{I} + 200\mathbf{L}$'
+                27: r'$\mathbf{I} + 100\mathbf{L}$'
             }
+
             df_small['obs'] = df_small['obs'].map(obs_mapping)
 
-            plt.figure(figsize=(20, 10), dpi=300)
-            sns.boxplot(x='obs', y='hausdorff_post', data=df_small, color='skyblue')
+            plt.figure(figsize=(8, 4.8), dpi=300)
+            ax = sns.boxplot(x='obs', y='hausdorff_post', data=df_small, color='skyblue')
+            ax.set_xticks([])
 
-            plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
+            plt.xlabel(r'Increased value of the correlation coefficient $c$ from left to right')
             plt.ylabel(
-                r'Average Hausdorff distances between all samples and their corresponding true target $[\mathrm{mm}]$')
+                r'Hausdorff distance $[\mathrm{mm}]$')
             plt.title(
-                'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (30 chains with 40000 samples each) with target-unaware model')
+                'Femur reconstruction with target-unaware model')
             plt.ylim(0, 80)
             plt.tight_layout()
             filename = "post_hausdorff.png"
@@ -1054,7 +1148,7 @@ class DataHandler:
                 subset = unique_shapes[i:i+5]
                 df_subset = df[df['shape'].isin(subset)]
 
-                plt.figure(figsize=(20, 10), dpi=300)
+                plt.figure(figsize=(16, 8), dpi=300)
                 pos_start = 0
 
                 for shape in subset:
@@ -1064,24 +1158,19 @@ class DataHandler:
                     pos_start += len(grouped) + 2
 
                 plt.title(
-                    'Femur reconstruction errors using parallel MCMC sampling (30 chains with 40000 samples each) '
-                    'split by reconstructed shape')
+                    'Femur reconstruction errors split by reconstructed shape')
                 plt.ylim(0, 40)
                 plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
-                plt.ylabel(r'Average distance to the corresponding point on the reconstruction surface (utilising'
-                            'given correspondences) $[\mathrm{mm}]$')
+                plt.ylabel(r'Euclidean distance $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
                 if i == 45:
                     x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
                                 r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
                                 r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
-                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 4
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 2
                 else:
-                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
-                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
-                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
-                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 5
+                    x_labels = [25, 50, 75, 100, 125, 150, 175, 200, 225] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
@@ -1107,7 +1196,7 @@ class DataHandler:
                 subset = unique_shapes[i:i+5]
                 df_subset = df[df['shape'].isin(subset)]
 
-                plt.figure(figsize=(20, 10), dpi=300)
+                plt.figure(figsize=(14, 7), dpi=300)
                 pos_start = 0
 
                 for shape in subset:
@@ -1117,24 +1206,19 @@ class DataHandler:
                     pos_start += len(grouped) + 2
 
                 plt.title(
-                    'Femur reconstruction errors using parallel MCMC sampling (MAP sample selected) split by '
-                    'reconstructed shape')
+                    'Femur reconstruction errors split by reconstructed shape')
                 plt.ylim(0, 40)
                 plt.xlabel(r'Precision matrix $\Sigma$ used for the calculation of the likelihood function')
-                plt.ylabel(r'Average distance to the corresponding point on the reconstruction surface (utilising'
-                            'given correspondences) $[\mathrm{mm}]$')
+                plt.ylabel(r'Euclidean distance $[\mathrm{mm}]$')
                 plt.legend(title='Reconstructed Femur Bone')
 
                 if i == 45:
                     x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
                                 r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
                                 r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
-                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 4
+                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 2
                 else:
-                    x_labels = [r'$\mathbf{I}$', r'$\mathbf{I} + 0.2\mathbf{L}$', r'$\mathbf{I} + 0.4\mathbf{L}$',
-                                r'$\mathbf{I} + 0.8\mathbf{L}$', r'$\mathbf{I} + 1.6\mathbf{L}$',
-                                r'$\mathbf{I} + 3.2\mathbf{L}$', r'$\mathbf{I} + 50\mathbf{L}$',
-                                r'$\mathbf{I} + 100\mathbf{L}$', r'$\mathbf{I} + 200\mathbf{L}$'] * 5
+                    x_labels = [25, 50, 75, 100, 125, 150, 175, 200, 225] * 5
                 x_tick_positions = []
                 pos_x = 0
                 for shape in subset:
@@ -1165,7 +1249,7 @@ class DataHandler:
 
                 # Average distance to corresponding point across all samples
                 plt.figure(figsize=(20, 10), dpi=300)
-                sns.boxplot(x='additional_param', y='mean_dist_c_post_all', data=df_group, color='skyblue')
+                sns.boxplot(x='additional_param', y='mean_dist_c_pos_all', data=df_group, color='skyblue')
                 plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (45 chains with 40000 '
                           f'samples each) with an observed portion of {group} per cent')
                 plt.xlabel(r'Variance $\sigma^2$ used in the calculation of the likelihood term of the samples '
@@ -1257,7 +1341,7 @@ class DataHandler:
                 ax2.scatter(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_all'], color='blue',
                             label='Variances (right)', s=100)
                 plt.plot(mean_of_means_var['additional_param'], mean_of_means_var['avg_var_all'], color='blue')
-                ax2.set_ylabel(r'$Average\ variance\ of\ the\ points\ [\mathrm{mm}^{2}]$', color='blue')
+                ax2.set_ylabel(r'Average variance of the points $[\mathrm{mm}^{2}]$', color='blue')
                 ax2.set_ylim(0, 500)
                 plt.title(f'Femur reconstruction (LOOCV with N=47) using parallel MCMC sampling (45 chains, MAP sample '
                           f'selected) with an observed portion of {group} per cent')
